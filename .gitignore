@@ -1,0 +1,34 @@
+# --- DATA FILTERS (Critical for your 5GB file) ---
+# Never upload the raw or processed data to GitHub
+*.csv
+*.parquet
+*.json
+data/
+temp/
+
+# --- PYTHON SETTINGS ---
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments (always keep these local)
+.venv/
+venv/
+ENV/
+env/
+
+# --- STREAMLIT & DASHBOARD ---
+# Streamlit's internal credentials and config
+.streamlit/
+
+# --- OPERATING SYSTEM ---
+# macOS specific
+.DS_Store
+# Windows specific
+Thumbs.db
+desktop.ini
+
+# --- IDE SETTINGS ---
+.vscode/
+.idea/
