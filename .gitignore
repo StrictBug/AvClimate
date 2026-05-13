@@ -3,6 +3,7 @@
 *.csv
 *.parquet
 *.json
+*.zip
 data/
 temp/
 
