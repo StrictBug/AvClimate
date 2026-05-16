@@ -227,10 +227,10 @@ body {
 .time-controls {
   position: static;
   margin-top: auto;
-  margin-left: calc(50% - 50vw);
-  margin-right: calc(50% - 50vw);
+  margin-left: 0;
+  margin-right: 0;
   margin-bottom: 0;
-  width: 100vw;
+  width: 100%;
   padding: 5px 6px 6px;
   border-top: 1px solid #2159d1;
   background: #3b6ed8;
@@ -261,7 +261,7 @@ body {
 .range-time-row {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(98px, 1fr) minmax(300px, 1.5fr) minmax(98px, 1fr);
+  grid-template-columns: minmax(52px, 1fr) minmax(280px, 1.5fr) minmax(52px, 1fr);
   align-items: center;
   gap: 6px;
 }
@@ -316,6 +316,8 @@ body {
 
 .frame-selection-highlight {
   position: absolute;
+  left: 0;
+  width: 100%;
   top: 50%;
   height: 5px;
   transform: translateY(-50%);
@@ -323,6 +325,11 @@ body {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4);
   z-index: 2;
   pointer-events: none;
+  transition: background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.frame-selection-highlight.is-inverted {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55);
 }
 
 .frame-bound-slider {

@@ -13,8 +13,8 @@ const state = {
 
 const dualSliderDefs = [
   { key: "year", minEl: "year-start", maxEl: "year-end", highlightEl: "year-highlight", minValueEl: "year-start-value", maxValueEl: "year-end-value", format: (v) => String(v) },
-  { key: "month", minEl: "month-start", maxEl: "month-end", highlightEl: "month-highlight", minValueEl: "month-start-value", maxValueEl: "month-end-value", format: (v) => state.options.months[Number(v) - 1] },
-  { key: "hour", minEl: "hour-start", maxEl: "hour-end", highlightEl: "hour-highlight", minValueEl: "hour-start-value", maxValueEl: "hour-end-value", format: (v) => String(v) },
+  { key: "month", minEl: "month-start", maxEl: "month-end", highlightEl: "month-highlight", invertEl: "invert-month", minValueEl: "month-start-value", maxValueEl: "month-end-value", format: (v) => state.options.months[Number(v) - 1] },
+  { key: "hour", minEl: "hour-start", maxEl: "hour-end", highlightEl: "hour-highlight", invertEl: "invert-hour", minValueEl: "hour-start-value", maxValueEl: "hour-end-value", format: (v) => `${String(v).padStart(2, "0")}Z` },
 ];
 
 const els = {
@@ -132,17 +132,33 @@ function updateDualSliderTrack(def) {
   const minInput = document.getElementById(def.minEl);
   const maxInput = document.getElementById(def.maxEl);
   const highlight = document.getElementById(def.highlightEl);
+  const invertInput = def.invertEl ? document.getElementById(def.invertEl) : null;
 
   const min = Number(minInput.min);
   const max = Number(minInput.max);
   const start = Number(minInput.value);
   const end = Number(maxInput.value);
 
-  const leftPct = ((start - min) / (max - min)) * 100;
-  const rightPct = ((end - min) / (max - min)) * 100;
+  const span = Math.max(1, max - min);
+  const startPct = ((start - min) / span) * 100;
+  const endPct = ((end - min) / span) * 100;
+  const isInverted = Boolean(invertInput && invertInput.checked);
 
-  highlight.style.left = `${leftPct}%`;
-  highlight.style.width = `${Math.max(0, rightPct - leftPct)}%`;
+  // Use two-tone track colors so invert mode is visibly different at a glance.
+  const selectedColor = "rgba(170, 214, 255, 0.95)";
+  const unselectedColor = "rgba(17, 43, 88, 0.45)";
+
+  highlight.style.left = "0%";
+  highlight.style.width = "100%";
+
+  if (isInverted) {
+    highlight.style.background = `linear-gradient(to right, ${selectedColor} 0%, ${selectedColor} ${startPct}%, ${unselectedColor} ${startPct}%, ${unselectedColor} ${endPct}%, ${selectedColor} ${endPct}%, ${selectedColor} 100%)`;
+    highlight.classList.add("is-inverted");
+    return;
+  }
+
+  highlight.style.background = `linear-gradient(to right, ${unselectedColor} 0%, ${unselectedColor} ${startPct}%, ${selectedColor} ${startPct}%, ${selectedColor} ${endPct}%, ${unselectedColor} ${endPct}%, ${unselectedColor} 100%)`;
+  highlight.classList.remove("is-inverted");
 }
 
 function updateSliderLabels() {
@@ -252,7 +268,7 @@ function validateRanges() {
 }
 
 function renderMetrics(metrics) {
-  if (!metrics || state.section === "overview") {
+  if (!metrics || state.section === "overview" || state.section === "wind" || state.section === "precipitation") {
     els.metrics.innerHTML = "";
     return;
   }
@@ -275,15 +291,32 @@ function clearChart(index) {
   host.parentElement.classList.add("hidden");
 }
 
+function getWindChartHeight() {
+  // Match the bottom alignment of overview's second chart row:
+  // overview total grid height for 2 rows = 328 + 8 + 328 = 664
+  // chart-card adds ~28px over chart canvas, so chart height target is 636.
+  return 636;
+}
+
 function drawCharts(figures) {
+  const isWindSection = state.section === "wind";
+  const isExpandedSection = state.section === "wind" || state.section === "precipitation";
+  const chartHeight = isExpandedSection ? getWindChartHeight() : 300;
+
   for (let i = 0; i < els.charts.length; i += 1) {
     clearChart(i);
+    els.charts[i].style.height = `${chartHeight}px`;
+    els.charts[i].parentElement.style.minHeight = isExpandedSection ? `${chartHeight + 28}px` : "328px";
   }
 
   figures.slice(0, 4).forEach((item, idx) => {
     const host = els.charts[idx];
     host.parentElement.classList.remove("hidden");
     const figure = item.figure;
+    if (isExpandedSection) {
+      figure.layout = figure.layout || {};
+      figure.layout.height = isWindSection && item.id === "wind_rose" ? (chartHeight - 24) : chartHeight;
+    }
     Plotly.newPlot(host, figure.data || [], figure.layout || {}, {
       displayModeBar: false,
       responsive: false,
@@ -299,7 +332,7 @@ async function fetchCharts() {
     return;
   }
 
-  const showOverlay = !hasShownInitialLoading;
+  const showOverlay = true;
 
   const controller = new AbortController();
   if (pendingFetch) {
@@ -377,7 +410,10 @@ function wireControls() {
   });
 
   [els.invertMonth, els.invertHour].forEach((el) => {
-    el.addEventListener("change", fetchCharts);
+    el.addEventListener("change", () => {
+      updateSliderLabels();
+      fetchCharts();
+    });
   });
 }
 

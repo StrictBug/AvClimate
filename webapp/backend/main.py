@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import struct
 from functools import lru_cache
 from io import BytesIO
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 import pandas as pd
 import polars as pl
 import plotly.express as px
+import plotly.graph_objects as go
 from timezonefinder import TimezoneFinder
 from plotly.utils import PlotlyJSONEncoder
 from fastapi import FastAPI, Query
@@ -53,7 +55,9 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 
-def categorize_speed(speed: float) -> str:
+def categorize_speed(speed_mps: float) -> str:
+    # ADAM wind speeds are stored in m/s; wind rose bands are in knots.
+    speed = speed_mps * 1.943844
     if speed < 1:
         return "0-1 kt"
     if speed < 5:
@@ -134,6 +138,83 @@ def paired_monthly_frequency(df: pd.DataFrame, categories: dict[str, list[str]])
     paired["Month"] = pd.Categorical(paired["Month"], categories=MONTH_NAMES, ordered=True)
     paired = paired.sort_values(["Month", "Type"])
     return paired
+
+
+def build_fog_low_cloud_frequency_figure(fog_df: pd.DataFrame, title: str) -> go.Figure:
+    work = fog_df.copy()
+
+    low1 = work["CEIL_CLD_AMT_1"].fillna("").astype(str).str.upper().str.startswith(("BKN", "OVC"))
+    low2 = work["CEIL_CLD_AMT_2"].fillna("").astype(str).str.upper().str.startswith(("BKN", "OVC"))
+    h1 = pd.to_numeric(work["CEIL_CLD_HT_1"], errors="coerce")
+    h2 = pd.to_numeric(work["CEIL_CLD_HT_2"], errors="coerce")
+
+    threshold_specs = [
+        ("below 2000ft", 2000, "#b67a3e"),
+        ("below 1500ft", 1500, "#a3612f"),
+        ("below 1000ft", 1000, "#8b4a25"),
+        ("below 500ft", 500, "#6d2f18"),
+    ]
+
+    monthly_components: list[pd.DataFrame] = []
+    for label, threshold, _ in threshold_specs:
+        mask = ((low1 & h1.lt(threshold)) | (low2 & h2.lt(threshold))).astype(int)
+        comp = work[["year", "month"]].copy()
+        comp[label] = mask
+        monthly = comp.groupby(["year", "month"])[label].sum().reset_index()
+        monthly = monthly.groupby("month", as_index=False)[label].mean()
+        monthly["Component"] = label
+        monthly.rename(columns={label: "Count"}, inplace=True)
+        monthly_components.append(monthly)
+
+    low_cloud_components = pd.concat(monthly_components, ignore_index=True)
+    low_cloud_components["Month"] = low_cloud_components["month"].apply(lambda m: MONTH_NAMES[m - 1])
+    low_cloud_components["Month"] = pd.Categorical(low_cloud_components["Month"], categories=MONTH_NAMES, ordered=True)
+
+    fog_monthly = monthly_flag_frequency(
+        work[["year", "month", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"]].copy(),
+        ["FG"],
+        "Fog",
+        fields=["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"],
+    )
+    if not fog_monthly.empty:
+        fog_monthly = fog_monthly.groupby("month", as_index=False)["Fog"].mean()
+    else:
+        fog_monthly = pd.DataFrame({"month": list(range(1, 13)), "Fog": 0.0})
+    fog_monthly["Month"] = fog_monthly["month"].apply(lambda m: MONTH_NAMES[m - 1])
+    fog_monthly["Month"] = pd.Categorical(fog_monthly["Month"], categories=MONTH_NAMES, ordered=True)
+    fog_monthly = fog_monthly.sort_values("Month")
+
+    fig = go.Figure()
+    for label, _, color in threshold_specs:
+        band = low_cloud_components[low_cloud_components["Component"] == label][["Month", "Count"]].copy()
+        band = band.set_index("Month").reindex(MONTH_NAMES, fill_value=0.0).reset_index()
+        fig.add_bar(
+            x=band["Month"],
+            y=band["Count"],
+            name=label,
+            offsetgroup="low_cloud",
+            legendgroup="low_cloud",
+            marker_color=color,
+            hovertemplate="Month: %{x}<br>Low cloud " + label + ": %{y:.2f}<extra></extra>",
+        )
+
+    fig.add_bar(
+        x=fog_monthly["Month"],
+        y=fog_monthly["Fog"],
+        name="Fog",
+        offsetgroup="fog",
+        legendgroup="fog",
+        marker_color="#d4af37",
+        hovertemplate="Month: %{x}<br>Fog: %{y:.2f}<extra></extra>",
+    )
+
+    fig.update_layout(
+        barmode="stack",
+        title=title,
+        yaxis_title="Avg Obs/Month",
+        legend_title_text="Category",
+    )
+    return fig
 
 
 @lru_cache(maxsize=512)
@@ -282,28 +363,81 @@ def apply_common_layout(fig: Any, height: int = PLOT_HEIGHT) -> None:
     )
 
 
+def apply_wind_rose_style(fig: Any) -> None:
+    def rgba_with_alpha(color: Any, alpha: float) -> str | None:
+        if not isinstance(color, str):
+            return None
+
+        color_str = color.strip()
+        if color_str.startswith("#") and len(color_str) in (4, 7):
+            if len(color_str) == 4:
+                r = int(color_str[1] * 2, 16)
+                g = int(color_str[2] * 2, 16)
+                b = int(color_str[3] * 2, 16)
+            else:
+                r = int(color_str[1:3], 16)
+                g = int(color_str[3:5], 16)
+                b = int(color_str[5:7], 16)
+            return f"rgba({r},{g},{b},{alpha})"
+
+        rgb_match = re.match(r"rgba?\(([^)]+)\)", color_str)
+        if rgb_match:
+            parts = [p.strip() for p in rgb_match.group(1).split(",")]
+            if len(parts) >= 3:
+                return f"rgba({parts[0]},{parts[1]},{parts[2]},{alpha})"
+
+        return None
+
+    for trace in fig.data:
+        base_color = getattr(trace.marker, "color", None)
+        if base_color is not None:
+            fill_color = rgba_with_alpha(base_color, 0.15)
+            if fill_color is not None:
+                trace.marker.color = fill_color
+            trace.marker.line.color = base_color
+        trace.marker.line.width = 2.0
+        trace.opacity = 1
+
+
 def fig_payload(fig_id: str, fig: Any) -> dict[str, Any]:
-    import base64
-    import struct
-    
     # Convert figure to dict and decode any binary-encoded arrays
     fig_dict = json.loads(fig.to_json())
-    
+
     # Recursively decode binary data in figure
-    def decode_binary_arrays(obj):
+    dtype_map: dict[str, tuple[str, int]] = {
+        "f8": ("d", 8),
+        "f4": ("f", 4),
+        "i8": ("q", 8),
+        "i4": ("i", 4),
+        "i2": ("h", 2),
+        "i1": ("b", 1),
+        "u8": ("Q", 8),
+        "u4": ("I", 4),
+        "u2": ("H", 2),
+        "u1": ("B", 1),
+        "b1": ("?", 1),
+    }
+
+    def decode_binary_arrays(obj: Any) -> Any:
         if isinstance(obj, dict):
-            if 'dtype' in obj and 'bdata' in obj:
+            if "dtype" in obj and "bdata" in obj:
                 # Decode Plotly's binary format
                 try:
-                    dtype = obj['dtype']
-                    bdata = base64.b64decode(obj['bdata'])
-                    if dtype == 'f8':  # float64
-                        count = len(bdata) // 8
-                        return list(struct.unpack(f'{count}d', bdata))
-                    elif dtype == 'f4':  # float32
-                        count = len(bdata) // 4
-                        return list(struct.unpack(f'{count}f', bdata))
-                except:
+                    dtype = str(obj["dtype"])
+                    bdata = base64.b64decode(obj["bdata"])
+                    fmt_info = dtype_map.get(dtype)
+                    if fmt_info is None:
+                        return obj
+
+                    fmt_char, item_size = fmt_info
+                    if len(bdata) == 0:
+                        return []
+                    if len(bdata) % item_size != 0:
+                        return obj
+
+                    count = len(bdata) // item_size
+                    return list(struct.unpack(f"<{count}{fmt_char}", bdata))
+                except Exception:
                     pass
                 return obj
             else:
@@ -387,6 +521,8 @@ def charts(
             .agg(pl.len().alias("Frequency"))
             .to_pandas()
         )
+        total_obs = float(rose_data["Frequency"].sum()) if not rose_data.empty else 0.0
+        rose_data["Frequency"] = (rose_data["Frequency"] / total_obs * 100.0) if total_obs > 0 else 0.0
         fig_rose = px.bar_polar(
             rose_data,
             r="Frequency",
@@ -396,6 +532,7 @@ def charts(
             title="Wind Rose",
             category_orders={"Speed Range": ["0-1 kt", "1-5 kt", "5-10 kt", "10-15 kt", "15-22 kt", "22+ kt"]},
         )
+        fig_rose.update_traces(hovertemplate="Direction: %{theta}<br>Speed: %{fullData.name}<br>Frequency: %{r:.2f}%<extra></extra>")
         try:
             airport_lat = COORDS_DF.loc[icao, "LAT"]
             airport_lon = COORDS_DF.loc[icao, "LONG"]
@@ -424,6 +561,7 @@ def charts(
             legend=dict(bgcolor="rgba(255,255,255,0.88)", bordercolor="#c7d4ef", borderwidth=1),
             polar=dict(bgcolor="rgba(0,0,0,0)", angularaxis=dict(direction="clockwise", period=360)),
         )
+        apply_wind_rose_style(fig_rose)
         apply_common_layout(fig_rose)
         figures.append(fig_payload("wind_rose", fig_rose))
 
@@ -496,26 +634,91 @@ def charts(
             "PRST_WX_DSC_2",
             "CEIL_CLD_AMT_1",
             "CEIL_CLD_AMT_2",
+            "CEIL_CLD_HT_1",
+            "CEIL_CLD_HT_2",
         ]).to_pandas()
         if not fog_df.empty:
-            fog_avg = paired_monthly_frequency(
-                fog_df,
-                {
-                    "Low cloud": {"fields": ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], "tokens": ["BKN", "OVC"]},
-                    "Fog": {"fields": ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], "tokens": ["FG"]},
-                },
-            )
+            # Get fog counts by month
+            fog_count = fog_df.copy()
+            fog_count["is_fog"] = token_mask_from_fields(fog_count, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], ["FG"])
+            fog_monthly_count = fog_count[fog_count["is_fog"]].groupby("month").size().reset_index(name="Count")
+            fog_monthly_count["Type"] = "Fog"
+            
+            # Get low cloud counts by month and ceiling height threshold
+            lc_df = fog_df.copy()
+            lc_df["is_low_cloud"] = token_mask_from_fields(lc_df, ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], ["BKN", "OVC"])
+            
+            # Expand heights to long format
+            heights_list = []
+            months_list = []
+            for idx, row in lc_df[lc_df["is_low_cloud"]].iterrows():
+                for ht_col in ["CEIL_CLD_HT_1", "CEIL_CLD_HT_2"]:
+                    if pd.notna(row[ht_col]):
+                        heights_list.append(row[ht_col])
+                        months_list.append(row["month"])
+            
+            if heights_list:
+                height_month_df = pd.DataFrame({"month": months_list, "height": heights_list})
+                # Classify by threshold (heights in feet; working backwards from largest)
+                height_month_df["Threshold"] = "below 2000ft"
+                height_month_df.loc[height_month_df["height"] < 1500, "Threshold"] = "below 1500ft"
+                height_month_df.loc[height_month_df["height"] < 1000, "Threshold"] = "below 1000ft"
+                height_month_df.loc[height_month_df["height"] < 500, "Threshold"] = "below 500ft"
+                
+                lc_monthly_count = height_month_df.groupby(["month", "Threshold"]).size().reset_index(name="Count")
+                # Normalize by number of months
+                num_years = len(lc_df["year"].unique())
+                lc_monthly_count["Count"] = lc_monthly_count["Count"] / num_years if num_years > 0 else 0
+                lc_monthly_count["Type"] = "Low cloud"
+            else:
+                lc_monthly_count = pd.DataFrame(columns=["month", "Threshold", "Count", "Type"])
+            
+            # Add Month column for both
+            fog_monthly_count["Threshold"] = None
+            fog_monthly_count["Month"] = fog_monthly_count["month"].apply(lambda m: MONTH_NAMES[m - 1])
+            
+            lc_monthly_count["Month"] = lc_monthly_count["month"].apply(lambda m: MONTH_NAMES[m - 1])
+            
+            # Combine for plotting
+            combined = pd.concat([
+                fog_monthly_count[["Month", "Count", "Type", "Threshold"]],
+                lc_monthly_count[["Month", "Count", "Type", "Threshold"]]
+            ], ignore_index=True)
+            
+            # Create grouped/stacked bar chart
+            # Use custom sorting for legend
+            threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
+            combined_sorted = combined.copy()
+            combined_sorted["Threshold"] = combined_sorted["Threshold"].fillna("N/A")
+            
             fig_fog = px.bar(
-                fog_avg,
+                combined_sorted,
                 x="Month",
                 y="Count",
-                color="Type",
-                barmode="group",
-                color_discrete_map={"Low cloud": "#8b5a2b", "Fog": "#d4af37"},
-                labels={"Count": "Avg Obs/Month", "Type": "Category"},
+                color="Threshold",
+                facet_col="Type",
+                labels={"Count": "Avg Obs/Month", "Threshold": "Ceiling Height"},
                 title="Fog/Low Cloud Frequency",
-                category_orders={"Month": MONTH_NAMES, "Type": ["Low cloud", "Fog"]},
+                category_orders={
+                    "Month": MONTH_NAMES,
+                    "Type": ["Low cloud", "Fog"],
+                    "Threshold": threshold_order + ["N/A"]
+                },
+                color_discrete_map={
+                    "below 500ft": "#8b0000",
+                    "below 1000ft": "#c62828",
+                    "below 1500ft": "#e57373",
+                    "below 2000ft": "#ef9a9a",
+                    "N/A": "#d4af37",
+                },
+                barmode="stack",
             )
+            fig_fog.update_xaxes(title_text="")
+            fig_fog.update_yaxes(title_text="Avg Obs/Month")
+            # Clean up facet labels
+            for annotation in fig_fog.layout.annotations:
+                if "Threshold=" not in annotation.text:
+                    annotation.text = annotation.text.replace("Type=", "")
             apply_common_layout(fig_fog)
             figures.append(fig_payload("fog_low_cloud", fig_fog))
 
@@ -528,6 +731,8 @@ def charts(
             .agg(pl.len().alias("Frequency"))
             .to_pandas()
         )
+        total_obs = float(rose_data["Frequency"].sum()) if not rose_data.empty else 0.0
+        rose_data["Frequency"] = (rose_data["Frequency"] / total_obs * 100.0) if total_obs > 0 else 0.0
         fig_rose = px.bar_polar(
             rose_data,
             r="Frequency",
@@ -537,6 +742,7 @@ def charts(
             title="Wind Rose",
             category_orders={"Speed Range": ["0-1 kt", "1-5 kt", "5-10 kt", "10-15 kt", "15-22 kt", "22+ kt"]},
         )
+        fig_rose.update_traces(hovertemplate="Direction: %{theta}<br>Speed: %{fullData.name}<br>Frequency: %{r:.2f}%<extra></extra>")
         try:
             airport_lat = COORDS_DF.loc[icao, "LAT"]
             airport_lon = COORDS_DF.loc[icao, "LONG"]
@@ -565,7 +771,17 @@ def charts(
             legend=dict(bgcolor="rgba(255,255,255,0.88)", bordercolor="#c7d4ef", borderwidth=1),
             polar=dict(bgcolor="rgba(0,0,0,0)", angularaxis=dict(direction="clockwise", period=360)),
         )
+        apply_wind_rose_style(fig_rose)
         apply_common_layout(fig_rose)
+        # Wind-tab specific spacing: shift plot right and reserve more title clearance.
+        fig_rose.update_layout(
+            margin=dict(l=62, r=180, t=48, b=22),
+            polar=dict(
+                domain=dict(x=[0.14, 0.92], y=[0.0, 0.93]),
+                bgcolor="rgba(0,0,0,0)",
+                angularaxis=dict(direction="clockwise", period=360),
+            ),
+        )
         figures.append(fig_payload("wind_rose", fig_rose))
 
         gale_df = filtered_df.select([
@@ -602,7 +818,7 @@ def charts(
                 gale_obs.loc[is_ts, "Category"] = "TS"
 
                 monthly_counts = gale_obs.groupby(["year", "month", "Category"]).size().reset_index(name="Gales")
-                monthly_avg_counts = monthly_counts.groupby(["month", "Category"], as_index=False)["Gales"].sum()
+                monthly_avg_counts = monthly_counts.groupby(["month", "Category"], as_index=False)["Gales"].mean()
                 monthly_avg_counts = monthly_avg_counts.rename(columns={"Gales": "Count"})
 
                 monthly_avg = monthly_avg.drop(columns=["Count"]).merge(monthly_avg_counts, on=["month", "Category"], how="left")
@@ -622,18 +838,20 @@ def charts(
             y="Count",
             color="Category",
             barmode="stack",
-            labels={"Count": "Total Gale Obs"},
+            labels={"Count": "Avg Gale Obs/Month"},
             title="Monthly Gale Frequency by Weather Type",
             category_orders={"Month": MONTH_NAMES, "Category": categories},
             color_discrete_map={"No wx": "#7a7a7a", "SHRA": "#3b82c4", "TS": "#c62828"},
         )
-        apply_common_layout(fig_gales)
+        apply_common_layout(fig_gales, height=380)
         figures.append(fig_payload("gale_weather_split", fig_gales))
 
     elif section == "precipitation":
         precip_df = filtered_df.select([
             "year",
             "month",
+            "WND_DIR",
+            "VSBY",
             "PRST_WX_DSC_1",
             "PRST_WX_PHENOM_1",
             "PRST_WX_DSC_2",
@@ -662,26 +880,104 @@ def charts(
             figures.append(fig_payload("monthly_precip", fig_precip))
 
         if not precip_df.empty:
-            rain_only = monthly_flag_frequency(precip_df.copy(), ["RA", "SH", "DZ"], "Rain")
-            thunder = monthly_flag_frequency(
-                precip_df.copy(),
-                ["TS"],
-                "Thunderstorm",
-                fields=["PRST_WX_DSC_1", "PRST_WX_DSC_2"],
-            )
-            merged = rain_only[["date", "Rain"]].merge(thunder[["date", "Thunderstorm"]], on="date", how="outer").fillna(0)
-            stacked = merged.melt(id_vars="date", value_vars=["Rain", "Thunderstorm"], var_name="Type", value_name="Count")
-            fig_split = px.bar(
-                stacked,
-                x="date",
-                y="Count",
-                color="Type",
-                barmode="group",
-                color_discrete_map={"Rain": "#2159d1", "Thunderstorm": "#c62828"},
-                title="Monthly Convective vs Rain Split",
-            )
-            apply_common_layout(fig_split)
-            figures.append(fig_payload("precip_split", fig_split))
+            vis_df = precip_df.dropna(subset=["WND_DIR", "VSBY"]).copy()
+            vis_df["dir_bin"] = ((vis_df["WND_DIR"] + 11.25) % 360 // 22.5 * 22.5)
+
+            precip_tokens = ["RA", "DZ", "SN", "GS", "GR", "PL", "SH", "TS"]
+            precip_fields = ["PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2"]
+            is_precip = token_mask_from_fields(vis_df, precip_fields, precip_tokens)
+            precip_obs = vis_df[is_precip].copy()
+
+            if not precip_obs.empty:
+                # 10-degree bins for smooth filled contour lines
+                dir_bins_10 = list(range(0, 360, 10))
+                precip_obs = precip_obs.copy()
+                precip_obs["dir_bin_10"] = (((precip_obs["WND_DIR"] + 5) % 360) // 10 * 10).astype(int)
+                denom_counts = precip_obs.groupby("dir_bin_10").size().to_dict()
+
+                # Inner → outer order so fill="tonext" fills each band between
+                # consecutive contours only (not back to origin).
+                thresholds = [3.0, 5.0, 7.0, 9.0]
+                labels = ["<3 km", "<5 km", "<7 km", "<9 km"]
+                line_colors = ["#30123b", "#4145ab", "#4675ed", "#39a2fc"]
+                fill_colors = [
+                    "rgba(48,18,59,0.15)",     # <3 km  – fills to origin
+                    "rgba(65,69,171,0.15)",    # <5 km  – fills to <3 km line
+                    "rgba(70,117,237,0.15)",   # <7 km  – fills to <5 km line
+                    "rgba(57,162,252,0.15)",   # <9 km  – fills to <7 km line
+                ]
+
+                # Pre-compute probability arrays so we can reference them in order
+                prob_arrays: list[list[float]] = []
+                for threshold in thresholds:
+                    sub = precip_obs[precip_obs["VSBY"] < threshold]
+                    num_counts = sub.groupby("dir_bin_10").size().to_dict()
+                    prob_arrays.append([
+                        (float(num_counts.get(d, 0)) / float(denom_counts.get(d, 1)) * 100.0)
+                        if denom_counts.get(d, 0) > 0 else 0.0
+                        for d in dir_bins_10
+                    ])
+
+                fig_split = go.Figure()
+                for i, (label, lc, fc, probs) in enumerate(
+                    zip(labels, line_colors, fill_colors, prob_arrays)
+                ):
+                    r_vals = probs + [probs[0]]
+                    theta_vals = [float(d) for d in dir_bins_10] + [0.0]
+                    fig_split.add_trace(go.Scatterpolar(
+                        r=r_vals,
+                        theta=theta_vals,
+                        mode="lines",
+                        # First (innermost) fills to origin; each outer trace fills
+                        # to the trace added immediately before it.
+                        fill="toself" if i == 0 else "tonext",
+                        fillcolor=fc,
+                        line=dict(color=lc, width=2),
+                        name=label,
+                        legendrank=len(thresholds) - i,  # legend: <9 km first
+                        hoveron="points+fills",
+                        hovertemplate=(
+                            f"<b>{label}</b><br>"
+                            "Direction: %{theta}<br>"
+                            "P(VSBY &lt; threshold | precip): %{r:.1f}%"
+                            "<extra></extra>"
+                        ),
+                    ))
+
+                try:
+                    airport_lat = COORDS_DF.loc[icao, "LAT"]
+                    airport_lon = COORDS_DF.loc[icao, "LONG"]
+                    bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+                    fig_split.update_layout(
+                        images=[
+                            dict(
+                                source=bg_img_base64,
+                                xref="paper",
+                                yref="paper",
+                                x=0.5,
+                                y=0.5,
+                                sizex=1.1,
+                                sizey=1.1,
+                                xanchor="center",
+                                yanchor="middle",
+                                sizing="contain",
+                                layer="below",
+                                opacity=0.7,
+                            )
+                        ]
+                    )
+                except Exception:
+                    pass
+                fig_split.update_layout(
+                    title="Conditional P(VSBY < threshold | Precipitation) by Direction",
+                    polar=dict(
+                        bgcolor="rgba(0,0,0,0)",
+                        angularaxis=dict(direction="clockwise", rotation=90),
+                        radialaxis=dict(ticksuffix="%"),
+                    ),
+                )
+                apply_common_layout(fig_split)
+                figures.append(fig_payload("precip_split", fig_split))
 
     elif section == "fog_low_cloud":
         fog_df = filtered_df.select([
@@ -693,36 +989,205 @@ def charts(
             "PRST_WX_DSC_2",
             "CEIL_CLD_AMT_1",
             "CEIL_CLD_AMT_2",
+            "CEIL_CLD_HT_1",
+            "CEIL_CLD_HT_2",
         ]).to_pandas()
+
+        fog_figures: list[dict[str, Any]] = []
+
+        def add_placeholder(fig_id: str, title: str, subtitle: str) -> None:
+            fig = go.Figure()
+            fig.add_annotation(
+                x=0.5,
+                y=0.5,
+                xref="paper",
+                yref="paper",
+                text=subtitle,
+                showarrow=False,
+                font=dict(size=14, color="#435a84"),
+            )
+            fig.update_xaxes(visible=False)
+            fig.update_yaxes(visible=False)
+            fig.update_layout(title=title, plot_bgcolor="white", paper_bgcolor="white")
+            apply_common_layout(fig)
+            fog_figures.append(fig_payload(fig_id, fig))
 
         if not fog_df.empty:
             fog_monthly = paired_monthly_frequency(
                 fog_df,
                 {
-                    "Low cloud": ["BKN", "OVC"],
-                    "Fog": ["FG"],
+                    "Low cloud": {"fields": ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], "tokens": ["BKN", "OVC"]},
+                    "Fog": {"fields": ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], "tokens": ["FG"]},
                 },
             )
-            fig_fog = px.bar(
-                fog_monthly,
-                x="Month",
-                y="Count",
-                color="Type",
-                barmode="group",
-                color_discrete_map={"Low cloud": "#8b5a2b", "Fog": "#d4af37"},
-                labels={"Count": "Avg Obs/Month", "Type": "Category"},
-                title="Monthly Fog/Low Cloud Frequency",
-                category_orders={"Month": MONTH_NAMES, "Type": ["Low cloud", "Fog"]},
-            )
-            apply_common_layout(fig_fog)
-            figures.append(fig_payload("monthly_fog", fig_fog))
 
+            # Top-left: frequency chart with low cloud stacked by ceiling height threshold
+            if not fog_monthly.empty:
+                # Get fog counts by month
+                fog_count = fog_df.copy()
+                fog_count["is_fog"] = token_mask_from_fields(fog_count, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], ["FG"])
+                fog_monthly_count = fog_count[fog_count["is_fog"]].groupby("month").size().reset_index(name="Count")
+                fog_monthly_count["Type"] = "Fog"
+                
+                # Get low cloud counts by month and ceiling height threshold
+                lc_df = fog_df.copy()
+                lc_df["is_low_cloud"] = token_mask_from_fields(lc_df, ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], ["BKN", "OVC"])
+                
+                # Expand heights to long format
+                heights_list = []
+                months_list = []
+                for idx, row in lc_df[lc_df["is_low_cloud"]].iterrows():
+                    for ht_col in ["CEIL_CLD_HT_1", "CEIL_CLD_HT_2"]:
+                        if pd.notna(row[ht_col]):
+                            heights_list.append(row[ht_col])
+                            months_list.append(row["month"])
+                
+                if heights_list:
+                    height_month_df = pd.DataFrame({"month": months_list, "height": heights_list})
+                    # Classify by threshold (heights in feet; working backwards from largest)
+                    height_month_df["Threshold"] = "below 2000ft"
+                    height_month_df.loc[height_month_df["height"] < 1500, "Threshold"] = "below 1500ft"
+                    height_month_df.loc[height_month_df["height"] < 1000, "Threshold"] = "below 1000ft"
+                    height_month_df.loc[height_month_df["height"] < 500, "Threshold"] = "below 500ft"
+                    
+                    lc_monthly_count = height_month_df.groupby(["month", "Threshold"]).size().reset_index(name="Count")
+                    # Normalize by number of months
+                    num_years = len(lc_df["year"].unique())
+                    lc_monthly_count["Count"] = lc_monthly_count["Count"] / num_years if num_years > 0 else 0
+                    lc_monthly_count["Type"] = "Low cloud"
+                else:
+                    lc_monthly_count = pd.DataFrame(columns=["month", "Threshold", "Count", "Type"])
+                
+                # Add Month column for both
+                fog_monthly_count["Threshold"] = None
+                fog_monthly_count["Month"] = fog_monthly_count["month"].apply(lambda m: MONTH_NAMES[m - 1])
+                
+                lc_monthly_count["Month"] = lc_monthly_count["month"].apply(lambda m: MONTH_NAMES[m - 1])
+                
+                # Combine for plotting
+                combined = pd.concat([
+                    fog_monthly_count[["Month", "Count", "Type", "Threshold"]],
+                    lc_monthly_count[["Month", "Count", "Type", "Threshold"]]
+                ], ignore_index=True)
+                
+                # Create grouped/stacked bar chart
+                # Use custom sorting for legend
+                threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
+                combined_sorted = combined.copy()
+                combined_sorted["Threshold"] = combined_sorted["Threshold"].fillna("N/A")
+                
+                fig_fog = px.bar(
+                    combined_sorted,
+                    x="Month",
+                    y="Count",
+                    color="Threshold",
+                    facet_col="Type",
+                    labels={"Count": "Avg Obs/Month", "Threshold": "Ceiling Height"},
+                    title="Fog/Low Cloud Frequency",
+                    category_orders={
+                        "Month": MONTH_NAMES,
+                        "Type": ["Low cloud", "Fog"],
+                        "Threshold": threshold_order + ["N/A"]
+                    },
+                    color_discrete_map={
+                        "below 500ft": "#8b0000",
+                        "below 1000ft": "#c62828",
+                        "below 1500ft": "#e57373",
+                        "below 2000ft": "#ef9a9a",
+                        "N/A": "#d4af37",
+                    },
+                    barmode="stack",
+                )
+                fig_fog.update_xaxes(title_text="")
+                fig_fog.update_yaxes(title_text="Avg Obs/Month")
+                # Clean up facet labels
+                for annotation in fig_fog.layout.annotations:
+                    if "Threshold=" not in annotation.text:
+                        annotation.text = annotation.text.replace("Type=", "")
+                apply_common_layout(fig_fog)
+                fog_figures.append(fig_payload("monthly_fog", fig_fog))
+            else:
+                add_placeholder("monthly_fog", "Fog/Low Cloud Frequency", "No data available")
+
+            # Top-right: relative split between fog and low cloud by month.
+            if not fog_monthly.empty:
+                split = (
+                    fog_monthly.pivot_table(index="Month", columns="Type", values="Count", aggfunc="sum")
+                    .reindex(MONTH_NAMES)
+                    .fillna(0.0)
+                    .reset_index()
+                )
+                split["Total"] = split.get("Fog", 0.0) + split.get("Low cloud", 0.0)
+                split["Fog Share"] = split.apply(
+                    lambda r: (float(r.get("Fog", 0.0)) / float(r["Total"]) * 100.0) if r["Total"] > 0 else 0.0,
+                    axis=1,
+                )
+                fig_share = px.line(
+                    split,
+                    x="Month",
+                    y="Fog Share",
+                    markers=True,
+                    labels={"Fog Share": "Fog Share (%)"},
+                    title="Fog Share of Combined Fog/Low Cloud",
+                    category_orders={"Month": MONTH_NAMES},
+                )
+                fig_share.update_traces(line=dict(color="#d4af37", width=3), marker=dict(color="#8b5a2b", size=8))
+                fig_share.update_layout(yaxis=dict(range=[0, 100]))
+                apply_common_layout(fig_share)
+                fog_figures.append(fig_payload("fog_share", fig_share))
+            else:
+                add_placeholder("fog_share", "Fog Share of Combined Fog/Low Cloud", "No data available")
+
+            # Bottom-left: low cloud amount distribution.
             cloud_amounts = pd.concat([fog_df["CEIL_CLD_AMT_1"], fog_df["CEIL_CLD_AMT_2"]], ignore_index=True).dropna()
-            cloud_counts = cloud_amounts.value_counts().reset_index()
-            cloud_counts.columns = ["Cloud Amount", "Count"]
-            fig_cloud = px.bar(cloud_counts, x="Cloud Amount", y="Count", title="Low Cloud Amount Distribution")
-            apply_common_layout(fig_cloud)
-            figures.append(fig_payload("cloud_distribution", fig_cloud))
+            if not cloud_amounts.empty:
+                cloud_counts = cloud_amounts.value_counts().reset_index()
+                cloud_counts.columns = ["Cloud Amount", "Count"]
+                fig_cloud = px.bar(
+                    cloud_counts,
+                    x="Cloud Amount",
+                    y="Count",
+                    color="Cloud Amount",
+                    color_discrete_map={"BKN": "#8b5a2b", "OVC": "#d4af37"},
+                    title="Low Cloud Amount Distribution",
+                )
+                fig_cloud.update_layout(showlegend=False)
+                apply_common_layout(fig_cloud)
+                fog_figures.append(fig_payload("cloud_distribution", fig_cloud))
+            else:
+                add_placeholder("cloud_distribution", "Low Cloud Amount Distribution", "No cloud amount records")
+
+            # Bottom-right: monthly co-occurrence rate of fog and low cloud.
+            joint = fog_df.copy()
+            joint["is_fog"] = token_mask_from_fields(joint, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], ["FG"])
+            joint["is_low_cloud"] = token_mask_from_fields(joint, ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], ["BKN", "OVC"])
+            joint["joint"] = (joint["is_fog"] & joint["is_low_cloud"]).astype(int)
+            joint_monthly = joint.groupby("month", as_index=False)["joint"].mean()
+            if not joint_monthly.empty:
+                joint_monthly["JointPct"] = joint_monthly["joint"] * 100.0
+                joint_monthly["Month"] = joint_monthly["month"].apply(lambda m: MONTH_NAMES[m - 1])
+                joint_monthly["Month"] = pd.Categorical(joint_monthly["Month"], categories=MONTH_NAMES, ordered=True)
+                joint_monthly = joint_monthly.sort_values("Month")
+                fig_joint = px.bar(
+                    joint_monthly,
+                    x="Month",
+                    y="JointPct",
+                    labels={"JointPct": "Obs with Fog and Low Cloud (%)"},
+                    title="Fog + Low Cloud Co-occurrence",
+                    color_discrete_sequence=["#2159d1"],
+                    category_orders={"Month": MONTH_NAMES},
+                )
+                apply_common_layout(fig_joint)
+                fog_figures.append(fig_payload("fog_cloud_joint", fig_joint))
+            else:
+                add_placeholder("fog_cloud_joint", "Fog + Low Cloud Co-occurrence", "No data available")
+        else:
+            add_placeholder("fog_share", "Fog Share of Combined Fog/Low Cloud", "No records for selected filters")
+            add_placeholder("monthly_fog", "Fog/Low Cloud Frequency", "No records for selected filters")
+            add_placeholder("cloud_distribution", "Low Cloud Amount Distribution", "No records for selected filters")
+            add_placeholder("fog_cloud_joint", "Fog + Low Cloud Co-occurrence", "No records for selected filters")
+
+        figures.extend(fog_figures[:4])
 
     elif section == "smoke_dust":
         smoke_df = filtered_df.select(["year", "month", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"]).to_pandas()
