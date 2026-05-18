@@ -9,6 +9,7 @@ const sections = [
 const state = {
   section: "overview",
   options: null,
+  latestFigures: [],
 };
 
 const dualSliderDefs = [
@@ -69,6 +70,9 @@ function showLoading(message = "Preparing charts...") {
   }
   setLoadingState(12, message);
   els.loadingOverlay.classList.remove("hidden");
+  // Add loading class to chart grid to lock layout
+  const chartGrid = document.getElementById("chart-grid");
+  if (chartGrid) chartGrid.classList.add("is-loading");
 
   loadingTimer = setInterval(() => {
     if (loadingProgress < 90) {
@@ -85,6 +89,9 @@ function hideLoading() {
   setLoadingState(100, "Ready");
   setTimeout(() => {
     els.loadingOverlay.classList.add("hidden");
+    // Remove loading class from chart grid
+    const chartGrid = document.getElementById("chart-grid");
+    if (chartGrid) chartGrid.classList.remove("is-loading");
     setLoadingState(0, "Preparing charts...");
   }, 120);
 }
@@ -108,6 +115,15 @@ function renderCategories() {
     buttonRow.appendChild(btn);
   });
   els.categoryRow.appendChild(buttonRow);
+  applySectionLayout();
+}
+
+function applySectionLayout() {
+  const chartGrid = document.getElementById("chart-grid");
+  if (!chartGrid) {
+    return;
+  }
+  chartGrid.classList.toggle("smoke-dust-layout", state.section === "smoke_dust");
 }
 
 function fillSelect(select, options, selectedValue) {
@@ -268,7 +284,7 @@ function validateRanges() {
 }
 
 function renderMetrics(metrics) {
-  if (!metrics || state.section === "overview" || state.section === "wind" || state.section === "precipitation") {
+  if (!metrics || state.section === "overview" || state.section === "wind" || state.section === "precipitation" || state.section === "fog_low_cloud" || state.section === "smoke_dust") {
     els.metrics.innerHTML = "";
     return;
   }
@@ -291,23 +307,43 @@ function clearChart(index) {
   host.parentElement.classList.add("hidden");
 }
 
-function getWindChartHeight() {
-  // Match the bottom alignment of overview's second chart row:
-  // overview total grid height for 2 rows = 328 + 8 + 328 = 664
-  // chart-card adds ~28px over chart canvas, so chart height target is 636.
-  return 636;
+function getChartHeight(section) {
+  const isWindSection = section === "wind";
+  const isExpandedSection = isWindSection || section === "precipitation";
+  const chartGridHeight = document.getElementById("chart-grid")?.clientHeight ?? 0;
+  const maxHeight = isExpandedSection ? 900 : 320;
+
+  if (isExpandedSection) {
+    return Math.max(380, Math.min(maxHeight, chartGridHeight - 12));
+  }
+
+  const headerHeight = document.querySelector(".app-header")?.offsetHeight ?? 0;
+  const controlsHeight = document.querySelector(".controls")?.offsetHeight ?? 0;
+  const statusHeight = els.status.offsetHeight ?? 0;
+  const metricsHeight = els.metrics.offsetHeight ?? 0;
+  const footerHeight = document.querySelector(".time-controls")?.offsetHeight ?? 0;
+  const viewportHeight = window.innerHeight;
+
+  // Reserve room for page padding, the 2-row grid gap, and Plotly card chrome.
+  const fixedChrome = 40;
+  const available = Math.max(0, viewportHeight - headerHeight - controlsHeight - statusHeight - metricsHeight - footerHeight - fixedChrome);
+  const perRowHeight = Math.floor((available - 8) / 2);
+
+  return Math.max(220, Math.min(maxHeight, perRowHeight - 12));
 }
 
 function drawCharts(figures) {
   const isWindSection = state.section === "wind";
   const isExpandedSection = state.section === "wind" || state.section === "precipitation";
-  const chartHeight = isExpandedSection ? getWindChartHeight() : 300;
+  const chartHeight = getChartHeight(state.section);
 
   for (let i = 0; i < els.charts.length; i += 1) {
     clearChart(i);
     els.charts[i].style.height = `${chartHeight}px`;
-    els.charts[i].parentElement.style.minHeight = isExpandedSection ? `${chartHeight + 28}px` : "328px";
+    els.charts[i].parentElement.style.minHeight = `${chartHeight + 10}px`;
   }
+
+  state.latestFigures = figures;
 
   figures.slice(0, 4).forEach((item, idx) => {
     const host = els.charts[idx];
@@ -315,7 +351,7 @@ function drawCharts(figures) {
     const figure = item.figure;
     if (isExpandedSection) {
       figure.layout = figure.layout || {};
-      figure.layout.height = isWindSection && item.id === "wind_rose" ? (chartHeight - 24) : chartHeight;
+      figure.layout.height = isWindSection && item.id === "wind_rose" ? (chartHeight - 12) : chartHeight;
     }
     Plotly.newPlot(host, figure.data || [], figure.layout || {}, {
       displayModeBar: false,
@@ -413,6 +449,20 @@ function wireControls() {
     el.addEventListener("change", () => {
       updateSliderLabels();
       fetchCharts();
+    });
+  });
+
+  let resizeFrame = null;
+  window.addEventListener("resize", () => {
+    if (!state.latestFigures.length) {
+      return;
+    }
+    if (resizeFrame) {
+      cancelAnimationFrame(resizeFrame);
+    }
+    resizeFrame = requestAnimationFrame(() => {
+      drawCharts(state.latestFigures);
+      resizeFrame = null;
     });
   });
 }

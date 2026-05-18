@@ -9,6 +9,7 @@ from io import BytesIO
 from typing import Any
 
 import pandas as pd
+import numpy as np
 import polars as pl
 import plotly.express as px
 import plotly.graph_objects as go
@@ -568,32 +569,68 @@ def charts(
         rain_df = filtered_df.select([
             "year",
             "month",
+            "TM_FULL",
             "PRST_WX_DSC_1",
             "PRST_WX_PHENOM_1",
             "PRST_WX_DSC_2",
             "PRST_WX_PHENOM_2",
         ]).to_pandas()
         if not rain_df.empty:
-            rain_avg = paired_monthly_frequency(
-                rain_df,
-                {
-                    "Rain": {"fields": ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], "tokens": ["RA", "SH", "DZ"]},
-                    "Thunderstorm": {"fields": ["PRST_WX_DSC_1", "PRST_WX_DSC_2"], "tokens": ["TS"]},
-                },
-            )
-            fig_rain = px.bar(
-                rain_avg,
-                x="Month",
-                y="Count",
-                color="Type",
-                barmode="group",
-                color_discrete_map={"Rain": "#2159d1", "Thunderstorm": "#c62828"},
-                labels={"Count": "Avg Obs/Month", "Type": "Category"},
-                title="Rain/Thunderstorm Frequency",
-                category_orders={"Month": MONTH_NAMES, "Type": ["Rain", "Thunderstorm"]},
-            )
-            apply_common_layout(fig_rain)
-            figures.append(fig_payload("rain_thunder", fig_rain))
+            rain_days = rain_df.copy()
+            rain_days["TM_FULL"] = pd.to_datetime(rain_days["TM_FULL"], utc=True, errors="coerce")
+            rain_days = rain_days.dropna(subset=["TM_FULL"])
+            if not rain_days.empty:
+                tz_name = airport_timezone(icao)
+                local_ts = rain_days["TM_FULL"].dt.tz_convert(tz_name)
+                rain_days["bom_day"] = (local_ts - pd.Timedelta(hours=9)).dt.date
+                rain_days["bom_month"] = pd.to_datetime(rain_days["bom_day"]).dt.month
+                rain_days["bom_year"] = pd.to_datetime(rain_days["bom_day"]).dt.year
+
+                rain_fields = ["PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2"]
+                rain_days["is_rain_day_obs"] = token_mask_from_fields(rain_days, rain_fields, ["RA", "DZ", "SH", "TS"])
+                rain_days["is_ts_day_obs"] = token_mask_from_fields(rain_days, ["PRST_WX_DSC_1", "PRST_WX_DSC_2"], ["TS"])
+
+                daily_flags = (
+                    rain_days.groupby(["bom_day", "bom_year", "bom_month"], as_index=False)
+                    .agg(
+                        Rain=("is_rain_day_obs", "any"),
+                        Thunderstorm=("is_ts_day_obs", "any"),
+                    )
+                )
+                monthly_counts = (
+                    daily_flags.groupby(["bom_year", "bom_month"], as_index=False)
+                    .agg(
+                        Rain=("Rain", "sum"),
+                        Thunderstorm=("Thunderstorm", "sum"),
+                    )
+                )
+                monthly_avg = (
+                    monthly_counts.groupby("bom_month", as_index=False)[["Rain", "Thunderstorm"]]
+                    .mean()
+                    .rename(columns={"bom_month": "month"})
+                )
+                monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+                monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=MONTH_NAMES, ordered=True)
+                monthly_avg = monthly_avg.sort_values("Month")
+                rain_avg = monthly_avg.melt(
+                    id_vars=["month", "Month"],
+                    value_vars=["Rain", "Thunderstorm"],
+                    var_name="Type",
+                    value_name="Count",
+                )
+                fig_rain = px.bar(
+                    rain_avg,
+                    x="Month",
+                    y="Count",
+                    color="Type",
+                    barmode="group",
+                    color_discrete_map={"Rain": "#2159d1", "Thunderstorm": "#c62828"},
+                    labels={"Count": "Avg Days/Month", "Type": "Category"},
+                    title="Rain/Thunderstorm Days",
+                    category_orders={"Month": MONTH_NAMES, "Type": ["Rain", "Thunderstorm"]},
+                )
+                apply_common_layout(fig_rain)
+                figures.append(fig_payload("rain_thunder", fig_rain))
 
         temp_df = filtered_df.select(["TM_FULL", "AIR_TEMP", "DWPT"]).to_pandas()
         if not temp_df.empty:
@@ -685,40 +722,84 @@ def charts(
                 lc_monthly_count[["Month", "Count", "Type", "Threshold"]]
             ], ignore_index=True)
             
-            # Create grouped/stacked bar chart
-            # Use custom sorting for legend
+            # Build paired grouped-stacked bar chart (same as fog/low cloud tab)
             threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
             combined_sorted = combined.copy()
             combined_sorted["Threshold"] = combined_sorted["Threshold"].fillna("N/A")
-            
-            fig_fog = px.bar(
-                combined_sorted,
-                x="Month",
-                y="Count",
-                color="Threshold",
-                facet_col="Type",
-                labels={"Count": "Avg Obs/Month", "Threshold": "Ceiling Height"},
-                title="Fog/Low Cloud Frequency",
-                category_orders={
-                    "Month": MONTH_NAMES,
-                    "Type": ["Low cloud", "Fog"],
-                    "Threshold": threshold_order + ["N/A"]
-                },
-                color_discrete_map={
-                    "below 500ft": "#8b0000",
-                    "below 1000ft": "#c62828",
-                    "below 1500ft": "#e57373",
-                    "below 2000ft": "#ef9a9a",
-                    "N/A": "#d4af37",
-                },
-                barmode="stack",
+
+            threshold_colors = {
+                "below 500ft": "#8b0000",
+                "below 1000ft": "#c62828",
+                "below 1500ft": "#e57373",
+                "below 2000ft": "#ef9a9a",
+            }
+
+            low_cloud_stack = (
+                combined_sorted[combined_sorted["Type"] == "Low cloud"]
+                .pivot_table(index="Month", columns="Threshold", values="Count", aggfunc="sum")
+                .reindex(MONTH_NAMES)
+                .fillna(0.0)
             )
-            fig_fog.update_xaxes(title_text="")
+            fog_by_month = (
+                combined_sorted[combined_sorted["Type"] == "Fog"]
+                .groupby("Month")["Count"]
+                .sum()
+                .reindex(MONTH_NAMES)
+                .fillna(0.0)
+            )
+
+            fig_fog = go.Figure()
+            # Invisible anchor bars keep both subcategory slots reserved so
+            # column widths stay fixed when legend items are toggled on/off.
+            fig_fog.add_bar(
+                x=[MONTH_NAMES, [""] * len(MONTH_NAMES)],
+                y=[0.0] * len(MONTH_NAMES),
+                showlegend=False,
+                hoverinfo="skip",
+                marker_color="rgba(0,0,0,0)",
+            )
+            fig_fog.add_bar(
+                x=[MONTH_NAMES, [" "] * len(MONTH_NAMES)],
+                y=[0.0] * len(MONTH_NAMES),
+                showlegend=False,
+                hoverinfo="skip",
+                marker_color="rgba(0,0,0,0)",
+            )
+            for threshold in threshold_order:
+                if threshold in low_cloud_stack.columns:
+                    y_values = low_cloud_stack[threshold].astype(float).tolist()
+                else:
+                    y_values = [0.0] * len(MONTH_NAMES)
+
+                fig_fog.add_bar(
+                    x=[MONTH_NAMES, [""] * len(MONTH_NAMES)],
+                    y=y_values,
+                    name=f"Low cloud: {threshold}",
+                    marker_color=threshold_colors[threshold],
+                    customdata=MONTH_NAMES,
+                    hovertemplate=(
+                        "Month: %{customdata}<br>"
+                        f"Low cloud ({threshold}): %{{y:.2f}}<extra></extra>"
+                    ),
+                )
+
+            fig_fog.add_bar(
+                x=[MONTH_NAMES, [" "] * len(MONTH_NAMES)],
+                y=fog_by_month.astype(float).tolist(),
+                name="Fog",
+                marker_color="#d4af37",
+                customdata=MONTH_NAMES,
+                hovertemplate="Month: %{customdata}<br>Fog: %{y:.2f}<extra></extra>",
+            )
+
+            fig_fog.update_layout(
+                title="Fog/Low Cloud Frequency",
+                barmode="stack",
+                legend_title_text="Category",
+            )
+            fig_fog.update_xaxes(title_text="", categoryorder="array", categoryarray=MONTH_NAMES)
             fig_fog.update_yaxes(title_text="Avg Obs/Month")
-            # Clean up facet labels
-            for annotation in fig_fog.layout.annotations:
-                if "Threshold=" not in annotation.text:
-                    annotation.text = annotation.text.replace("Type=", "")
+
             apply_common_layout(fig_fog)
             figures.append(fig_payload("fog_low_cloud", fig_fog))
 
@@ -850,6 +931,7 @@ def charts(
         precip_df = filtered_df.select([
             "year",
             "month",
+            "TM_FULL",
             "WND_DIR",
             "VSBY",
             "PRST_WX_DSC_1",
@@ -858,26 +940,65 @@ def charts(
             "PRST_WX_PHENOM_2",
         ]).to_pandas()
         if not precip_df.empty:
-            monthly_precip = paired_monthly_frequency(
-                precip_df,
-                {
-                    "Rain": {"fields": ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], "tokens": ["RA", "SH", "DZ"]},
-                    "Thunderstorm": {"fields": ["PRST_WX_DSC_1", "PRST_WX_DSC_2"], "tokens": ["TS"]},
-                },
-            )
-            fig_precip = px.bar(
-                monthly_precip,
-                x="Month",
-                y="Count",
-                color="Type",
-                barmode="group",
-                color_discrete_map={"Rain": "#2159d1", "Thunderstorm": "#c62828"},
-                labels={"Count": "Avg Obs/Month", "Type": "Category"},
-                title="Monthly Rain/Thunderstorm Frequency",
-                category_orders={"Month": MONTH_NAMES, "Type": ["Rain", "Thunderstorm"]},
-            )
-            apply_common_layout(fig_precip)
-            figures.append(fig_payload("monthly_precip", fig_precip))
+            precip_days = precip_df.copy()
+            precip_days["TM_FULL"] = pd.to_datetime(precip_days["TM_FULL"], utc=True, errors="coerce")
+            precip_days = precip_days.dropna(subset=["TM_FULL"])
+
+            if not precip_days.empty:
+                tz_name = airport_timezone(icao)
+                local_ts = precip_days["TM_FULL"].dt.tz_convert(tz_name)
+                precip_days["bom_day"] = (local_ts - pd.Timedelta(hours=9)).dt.date
+                precip_days["bom_month"] = pd.to_datetime(precip_days["bom_day"]).dt.month
+                precip_days["bom_year"] = pd.to_datetime(precip_days["bom_day"]).dt.year
+
+                rain_fields = ["PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2"]
+                precip_days["is_rain_day_obs"] = token_mask_from_fields(precip_days, rain_fields, ["RA", "DZ", "SH", "TS"])
+                precip_days["is_ts_day_obs"] = token_mask_from_fields(precip_days, ["PRST_WX_DSC_1", "PRST_WX_DSC_2"], ["TS"])
+
+                daily_flags = (
+                    precip_days.groupby(["bom_day", "bom_year", "bom_month"], as_index=False)
+                    .agg(
+                        Rain=("is_rain_day_obs", "any"),
+                        Thunderstorm=("is_ts_day_obs", "any"),
+                    )
+                )
+
+                monthly_counts = (
+                    daily_flags.groupby(["bom_year", "bom_month"], as_index=False)
+                    .agg(
+                        Rain=("Rain", "sum"),
+                        Thunderstorm=("Thunderstorm", "sum"),
+                    )
+                )
+
+                monthly_avg = (
+                    monthly_counts.groupby("bom_month", as_index=False)[["Rain", "Thunderstorm"]]
+                    .mean()
+                    .rename(columns={"bom_month": "month"})
+                )
+                monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+                monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=MONTH_NAMES, ordered=True)
+                monthly_avg = monthly_avg.sort_values("Month")
+                monthly_precip = monthly_avg.melt(
+                    id_vars=["month", "Month"],
+                    value_vars=["Rain", "Thunderstorm"],
+                    var_name="Type",
+                    value_name="Count",
+                )
+
+                fig_precip = px.bar(
+                    monthly_precip,
+                    x="Month",
+                    y="Count",
+                    color="Type",
+                    barmode="group",
+                    color_discrete_map={"Rain": "#2159d1", "Thunderstorm": "#c62828"},
+                    labels={"Count": "Avg Days/Month", "Type": "Category"},
+                    title="Monthly Rain/Thunderstorm Days",
+                    category_orders={"Month": MONTH_NAMES, "Type": ["Rain", "Thunderstorm"]},
+                )
+                apply_common_layout(fig_precip)
+                figures.append(fig_payload("monthly_precip", fig_precip))
 
         if not precip_df.empty:
             vis_df = precip_df.dropna(subset=["WND_DIR", "VSBY"]).copy()
@@ -983,6 +1104,9 @@ def charts(
         fog_df = filtered_df.select([
             "year",
             "month",
+            "TM_FULL",
+            "WND_DIR",
+            "WND_SPD",
             "PRST_WX_PHENOM_1",
             "PRST_WX_PHENOM_2",
             "PRST_WX_DSC_1",
@@ -1012,208 +1136,717 @@ def charts(
             apply_common_layout(fig)
             fog_figures.append(fig_payload(fig_id, fig))
 
-        if not fog_df.empty:
-            fog_monthly = paired_monthly_frequency(
-                fog_df,
-                {
-                    "Low cloud": {"fields": ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], "tokens": ["BKN", "OVC"]},
-                    "Fog": {"fields": ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], "tokens": ["FG"]},
-                },
+        def build_fog_low_cloud_frequency_chart(dataset: pd.DataFrame, title: str) -> go.Figure | None:
+            if dataset.empty:
+                return None
+
+            fog_count = dataset.copy()
+            fog_count["is_fog"] = token_mask_from_fields(
+                fog_count,
+                ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"],
+                ["FG"],
+            )
+            fog_monthly_count = fog_count[fog_count["is_fog"]].groupby("month").size().reset_index(name="Count")
+            fog_monthly_count["Type"] = "Fog"
+
+            lc_df = dataset.copy()
+            lc_df["is_low_cloud"] = token_mask_from_fields(lc_df, ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], ["BKN", "OVC"])
+
+            heights_list: list[Any] = []
+            months_list: list[Any] = []
+            for _, row in lc_df[lc_df["is_low_cloud"]].iterrows():
+                for ht_col in ["CEIL_CLD_HT_1", "CEIL_CLD_HT_2"]:
+                    if pd.notna(row[ht_col]):
+                        heights_list.append(row[ht_col])
+                        months_list.append(row["month"])
+
+            if heights_list:
+                height_month_df = pd.DataFrame({"month": months_list, "height": heights_list})
+                height_month_df["Threshold"] = "below 2000ft"
+                height_month_df.loc[height_month_df["height"] < 1500, "Threshold"] = "below 1500ft"
+                height_month_df.loc[height_month_df["height"] < 1000, "Threshold"] = "below 1000ft"
+                height_month_df.loc[height_month_df["height"] < 500, "Threshold"] = "below 500ft"
+
+                lc_monthly_count = height_month_df.groupby(["month", "Threshold"]).size().reset_index(name="Count")
+                num_years = len(lc_df["year"].unique())
+                lc_monthly_count["Count"] = lc_monthly_count["Count"] / num_years if num_years > 0 else 0
+                lc_monthly_count["Type"] = "Low cloud"
+            else:
+                lc_monthly_count = pd.DataFrame(columns=["month", "Threshold", "Count", "Type"])
+
+            fog_monthly_count["Threshold"] = None
+            fog_monthly_count["Month"] = fog_monthly_count["month"].apply(lambda m: MONTH_NAMES[m - 1])
+            lc_monthly_count["Month"] = lc_monthly_count["month"].apply(lambda m: MONTH_NAMES[m - 1])
+
+            combined = pd.concat([
+                fog_monthly_count[["Month", "Count", "Type", "Threshold"]],
+                lc_monthly_count[["Month", "Count", "Type", "Threshold"]],
+            ], ignore_index=True)
+
+            threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
+            combined_sorted = combined.copy()
+            combined_sorted["Threshold"] = combined_sorted["Threshold"].fillna("N/A")
+
+            threshold_colors = {
+                "below 500ft": "#8b0000",
+                "below 1000ft": "#c62828",
+                "below 1500ft": "#e57373",
+                "below 2000ft": "#ef9a9a",
+            }
+
+            low_cloud_stack = (
+                combined_sorted[combined_sorted["Type"] == "Low cloud"]
+                .pivot_table(index="Month", columns="Threshold", values="Count", aggfunc="sum")
+                .reindex(MONTH_NAMES)
+                .fillna(0.0)
+            )
+            fog_by_month = (
+                combined_sorted[combined_sorted["Type"] == "Fog"]
+                .groupby("Month")["Count"]
+                .sum()
+                .reindex(MONTH_NAMES)
+                .fillna(0.0)
             )
 
-            # Top-left: frequency chart with low cloud stacked by ceiling height threshold
-            if not fog_monthly.empty:
-                # Get fog counts by month
-                fog_count = fog_df.copy()
-                fog_count["is_fog"] = token_mask_from_fields(fog_count, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], ["FG"])
-                fog_monthly_count = fog_count[fog_count["is_fog"]].groupby("month").size().reset_index(name="Count")
-                fog_monthly_count["Type"] = "Fog"
-                
-                # Get low cloud counts by month and ceiling height threshold
-                lc_df = fog_df.copy()
-                lc_df["is_low_cloud"] = token_mask_from_fields(lc_df, ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], ["BKN", "OVC"])
-                
-                # Expand heights to long format
-                heights_list = []
-                months_list = []
-                for idx, row in lc_df[lc_df["is_low_cloud"]].iterrows():
-                    for ht_col in ["CEIL_CLD_HT_1", "CEIL_CLD_HT_2"]:
-                        if pd.notna(row[ht_col]):
-                            heights_list.append(row[ht_col])
-                            months_list.append(row["month"])
-                
-                if heights_list:
-                    height_month_df = pd.DataFrame({"month": months_list, "height": heights_list})
-                    # Classify by threshold (heights in feet; working backwards from largest)
-                    height_month_df["Threshold"] = "below 2000ft"
-                    height_month_df.loc[height_month_df["height"] < 1500, "Threshold"] = "below 1500ft"
-                    height_month_df.loc[height_month_df["height"] < 1000, "Threshold"] = "below 1000ft"
-                    height_month_df.loc[height_month_df["height"] < 500, "Threshold"] = "below 500ft"
-                    
-                    lc_monthly_count = height_month_df.groupby(["month", "Threshold"]).size().reset_index(name="Count")
-                    # Normalize by number of months
-                    num_years = len(lc_df["year"].unique())
-                    lc_monthly_count["Count"] = lc_monthly_count["Count"] / num_years if num_years > 0 else 0
-                    lc_monthly_count["Type"] = "Low cloud"
+            fig = go.Figure()
+            fig.add_bar(
+                x=[MONTH_NAMES, [""] * len(MONTH_NAMES)],
+                y=[0.0] * len(MONTH_NAMES),
+                showlegend=False,
+                hoverinfo="skip",
+                marker_color="rgba(0,0,0,0)",
+            )
+            fig.add_bar(
+                x=[MONTH_NAMES, [" "] * len(MONTH_NAMES)],
+                y=[0.0] * len(MONTH_NAMES),
+                showlegend=False,
+                hoverinfo="skip",
+                marker_color="rgba(0,0,0,0)",
+            )
+
+            for threshold in threshold_order:
+                y_values = low_cloud_stack[threshold].astype(float).tolist() if threshold in low_cloud_stack.columns else [0.0] * len(MONTH_NAMES)
+                fig.add_bar(
+                    x=[MONTH_NAMES, [""] * len(MONTH_NAMES)],
+                    y=y_values,
+                    name=f"Low cloud: {threshold}",
+                    marker_color=threshold_colors[threshold],
+                    customdata=MONTH_NAMES,
+                    hovertemplate=(
+                        "Month: %{customdata}<br>"
+                        f"Low cloud ({threshold}): %{{y:.2f}}<extra></extra>"
+                    ),
+                )
+
+            fig.add_bar(
+                x=[MONTH_NAMES, [" "] * len(MONTH_NAMES)],
+                y=fog_by_month.astype(float).tolist(),
+                name="Fog",
+                marker_color="#d4af37",
+                customdata=MONTH_NAMES,
+                hovertemplate="Month: %{customdata}<br>Fog: %{y:.2f}<extra></extra>",
+            )
+
+            fig.update_layout(title=title, barmode="stack", legend_title_text="Category")
+            fig.update_xaxes(title_text="", categoryorder="array", categoryarray=MONTH_NAMES)
+            fig.update_yaxes(title_text="Avg Obs/Month")
+            return fig
+
+        def build_fog_low_cloud_wind_plot(dataset: pd.DataFrame, title: str) -> go.Figure | None:
+            if dataset.empty:
+                return None
+
+            plot_df = dataset.copy()
+            plot_df["is_fog"] = token_mask_from_fields(
+                plot_df,
+                ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"],
+                ["FG"],
+            )
+
+            cld1 = plot_df["CEIL_CLD_AMT_1"].fillna("").astype(str).str.upper().str.startswith(("BKN", "OVC"))
+            cld2 = plot_df["CEIL_CLD_AMT_2"].fillna("").astype(str).str.upper().str.startswith(("BKN", "OVC"))
+            h1 = pd.to_numeric(plot_df["CEIL_CLD_HT_1"], errors="coerce")
+            h2 = pd.to_numeric(plot_df["CEIL_CLD_HT_2"], errors="coerce")
+            plot_df["is_low_cloud_2000_1500"] = ((cld1 & h1.lt(2000) & h1.ge(1500)) | (cld2 & h2.lt(2000) & h2.ge(1500)))
+            plot_df["is_low_cloud_1500_1000"] = ((cld1 & h1.lt(1500) & h1.ge(1000)) | (cld2 & h2.lt(1500) & h2.ge(1000)))
+            plot_df["is_low_cloud_1000_500"] = ((cld1 & h1.lt(1000) & h1.ge(500)) | (cld2 & h2.lt(1000) & h2.ge(500)))
+            plot_df["is_low_cloud_below_500"] = ((cld1 & h1.lt(500)) | (cld2 & h2.lt(500)))
+
+            plot_df = plot_df[
+                plot_df["is_fog"]
+                | plot_df["is_low_cloud_2000_1500"]
+                | plot_df["is_low_cloud_1500_1000"]
+                | plot_df["is_low_cloud_1000_500"]
+                | plot_df["is_low_cloud_below_500"]
+            ].copy()
+            plot_df = plot_df.dropna(subset=["WND_DIR", "WND_SPD"])
+            if plot_df.empty:
+                return None
+
+            direction_step = 10.0
+            speed_step = 1.0
+            speed_values = pd.to_numeric(plot_df["WND_SPD"], errors="coerce").dropna()
+            if speed_values.empty:
+                return None
+            observed_max_speed = float(speed_values.max())
+            # Add a little headroom and round up to the next 5 kt so contours fill the panel.
+            max_speed = max(10.0, float(math.ceil((observed_max_speed * 1.1) / 5.0) * 5.0))
+            dir_edges = np.arange(0.0, 360.0 + direction_step, direction_step)
+            dir_centers = dir_edges[:-1] + (direction_step / 2.0)
+            speed_edges = np.arange(0.0, max_speed + speed_step, speed_step)
+            cutoff_pct = 0.06
+            category_colors = {
+                "Low cloud 2000-1500ft": "#ef9a9a",
+                "Low cloud 1500-1000ft": "#e57373",
+                "Low cloud 1000-500ft": "#c62828",
+                "Low cloud <500ft": "#8b0000",
+                "Fog": "#d4af37",
+            }
+
+            def hex_to_rgba(hex_color: str, alpha: float) -> str:
+                color = hex_color.lstrip("#")
+                if len(color) != 6:
+                    return f"rgba(0,0,0,{alpha})"
+                red = int(color[0:2], 16)
+                green = int(color[2:4], 16)
+                blue = int(color[4:6], 16)
+                return f"rgba({red},{green},{blue},{alpha})"
+
+            def smooth_frequency_field(field: np.ndarray, passes: int = 3) -> np.ndarray:
+                out = field.astype(float).copy()
+                for _ in range(passes):
+                    out = (np.roll(out, 1, axis=1) + 2.0 * out + np.roll(out, -1, axis=1)) / 4.0
+                    padded = np.pad(out, ((1, 1), (0, 0)), mode="edge")
+                    out = (padded[:-2] + 2.0 * padded[1:-1] + padded[2:]) / 4.0
+                return out
+
+            def boundary_from_level(field: np.ndarray, level: float) -> np.ndarray:
+                boundary = np.full(len(dir_centers), np.nan)
+                for col_idx in range(len(dir_centers)):
+                    column = field[:, col_idx]
+                    hit_idx = np.where(column >= level)[0]
+                    if len(hit_idx) > 0:
+                        boundary[col_idx] = float(speed_edges[int(hit_idx.max()) + 1])
+                boundary = np.nan_to_num(boundary, nan=0.0)
+                boundary = (np.roll(boundary, 1) + 2.0 * boundary + np.roll(boundary, -1)) / 4.0
+                return boundary
+
+            fig = go.Figure()
+            traces_added = 0
+            max_plotted_speed = 0.0
+            layer_order = [
+                "Low cloud 2000-1500ft",
+                "Low cloud 1500-1000ft",
+                "Low cloud 1000-500ft",
+                "Low cloud <500ft",
+                "Fog",
+            ]
+            for label in layer_order:
+                if label == "Fog":
+                    sub = plot_df[plot_df["is_fog"]].copy()
+                elif label == "Low cloud 2000-1500ft":
+                    sub = plot_df[plot_df["is_low_cloud_2000_1500"]].copy()
+                elif label == "Low cloud 1500-1000ft":
+                    sub = plot_df[plot_df["is_low_cloud_1500_1000"]].copy()
+                elif label == "Low cloud 1000-500ft":
+                    sub = plot_df[plot_df["is_low_cloud_1000_500"]].copy()
                 else:
-                    lc_monthly_count = pd.DataFrame(columns=["month", "Threshold", "Count", "Type"])
-                
-                # Add Month column for both
-                fog_monthly_count["Threshold"] = None
-                fog_monthly_count["Month"] = fog_monthly_count["month"].apply(lambda m: MONTH_NAMES[m - 1])
-                
-                lc_monthly_count["Month"] = lc_monthly_count["month"].apply(lambda m: MONTH_NAMES[m - 1])
-                
-                # Combine for plotting
-                combined = pd.concat([
-                    fog_monthly_count[["Month", "Count", "Type", "Threshold"]],
-                    lc_monthly_count[["Month", "Count", "Type", "Threshold"]]
-                ], ignore_index=True)
-                
-                # Create grouped/stacked bar chart
-                # Use custom sorting for legend
-                threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
-                combined_sorted = combined.copy()
-                combined_sorted["Threshold"] = combined_sorted["Threshold"].fillna("N/A")
-                
-                fig_fog = px.bar(
-                    combined_sorted,
-                    x="Month",
-                    y="Count",
-                    color="Threshold",
-                    facet_col="Type",
-                    labels={"Count": "Avg Obs/Month", "Threshold": "Ceiling Height"},
-                    title="Fog/Low Cloud Frequency",
-                    category_orders={
-                        "Month": MONTH_NAMES,
-                        "Type": ["Low cloud", "Fog"],
-                        "Threshold": threshold_order + ["N/A"]
-                    },
-                    color_discrete_map={
-                        "below 500ft": "#8b0000",
-                        "below 1000ft": "#c62828",
-                        "below 1500ft": "#e57373",
-                        "below 2000ft": "#ef9a9a",
-                        "N/A": "#d4af37",
-                    },
-                    barmode="stack",
-                )
-                fig_fog.update_xaxes(title_text="")
-                fig_fog.update_yaxes(title_text="Avg Obs/Month")
-                # Clean up facet labels
-                for annotation in fig_fog.layout.annotations:
-                    if "Threshold=" not in annotation.text:
-                        annotation.text = annotation.text.replace("Type=", "")
-                apply_common_layout(fig_fog)
-                fog_figures.append(fig_payload("monthly_fog", fig_fog))
-            else:
-                add_placeholder("monthly_fog", "Fog/Low Cloud Frequency", "No data available")
+                    sub = plot_df[plot_df["is_low_cloud_below_500"]].copy()
 
-            # Top-right: relative split between fog and low cloud by month.
-            if not fog_monthly.empty:
-                split = (
-                    fog_monthly.pivot_table(index="Month", columns="Type", values="Count", aggfunc="sum")
-                    .reindex(MONTH_NAMES)
-                    .fillna(0.0)
-                    .reset_index()
-                )
-                split["Total"] = split.get("Fog", 0.0) + split.get("Low cloud", 0.0)
-                split["Fog Share"] = split.apply(
-                    lambda r: (float(r.get("Fog", 0.0)) / float(r["Total"]) * 100.0) if r["Total"] > 0 else 0.0,
-                    axis=1,
-                )
-                fig_share = px.line(
-                    split,
-                    x="Month",
-                    y="Fog Share",
-                    markers=True,
-                    labels={"Fog Share": "Fog Share (%)"},
-                    title="Fog Share of Combined Fog/Low Cloud",
-                    category_orders={"Month": MONTH_NAMES},
-                )
-                fig_share.update_traces(line=dict(color="#d4af37", width=3), marker=dict(color="#8b5a2b", size=8))
-                fig_share.update_layout(yaxis=dict(range=[0, 100]))
-                apply_common_layout(fig_share)
-                fog_figures.append(fig_payload("fog_share", fig_share))
-            else:
-                add_placeholder("fog_share", "Fog Share of Combined Fog/Low Cloud", "No data available")
+                if sub.empty:
+                    continue
 
-            # Bottom-left: low cloud amount distribution.
-            cloud_amounts = pd.concat([fog_df["CEIL_CLD_AMT_1"], fog_df["CEIL_CLD_AMT_2"]], ignore_index=True).dropna()
-            if not cloud_amounts.empty:
-                cloud_counts = cloud_amounts.value_counts().reset_index()
-                cloud_counts.columns = ["Cloud Amount", "Count"]
-                fig_cloud = px.bar(
-                    cloud_counts,
-                    x="Cloud Amount",
-                    y="Count",
-                    color="Cloud Amount",
-                    color_discrete_map={"BKN": "#8b5a2b", "OVC": "#d4af37"},
-                    title="Low Cloud Amount Distribution",
-                )
-                fig_cloud.update_layout(showlegend=False)
-                apply_common_layout(fig_cloud)
-                fog_figures.append(fig_payload("cloud_distribution", fig_cloud))
-            else:
-                add_placeholder("cloud_distribution", "Low Cloud Amount Distribution", "No cloud amount records")
+                dir_vals = np.mod(pd.to_numeric(sub["WND_DIR"], errors="coerce"), 360.0).to_numpy()
+                spd_vals = pd.to_numeric(sub["WND_SPD"], errors="coerce").to_numpy()
+                valid = np.isfinite(dir_vals) & np.isfinite(spd_vals)
+                dir_vals = dir_vals[valid]
+                spd_vals = np.clip(spd_vals[valid], 0.0, max_speed)
+                if len(dir_vals) == 0:
+                    continue
 
-            # Bottom-right: monthly co-occurrence rate of fog and low cloud.
-            joint = fog_df.copy()
-            joint["is_fog"] = token_mask_from_fields(joint, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], ["FG"])
-            joint["is_low_cloud"] = token_mask_from_fields(joint, ["CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2"], ["BKN", "OVC"])
-            joint["joint"] = (joint["is_fog"] & joint["is_low_cloud"]).astype(int)
-            joint_monthly = joint.groupby("month", as_index=False)["joint"].mean()
-            if not joint_monthly.empty:
-                joint_monthly["JointPct"] = joint_monthly["joint"] * 100.0
-                joint_monthly["Month"] = joint_monthly["month"].apply(lambda m: MONTH_NAMES[m - 1])
-                joint_monthly["Month"] = pd.Categorical(joint_monthly["Month"], categories=MONTH_NAMES, ordered=True)
-                joint_monthly = joint_monthly.sort_values("Month")
-                fig_joint = px.bar(
-                    joint_monthly,
-                    x="Month",
-                    y="JointPct",
-                    labels={"JointPct": "Obs with Fog and Low Cloud (%)"},
-                    title="Fog + Low Cloud Co-occurrence",
-                    color_discrete_sequence=["#2159d1"],
-                    category_orders={"Month": MONTH_NAMES},
+                hist2d, _, _ = np.histogram2d(spd_vals, dir_vals, bins=[speed_edges, dir_edges])
+                total_obs = float(hist2d.sum())
+                if total_obs <= 0:
+                    continue
+
+                rel_field = (hist2d / total_obs) * 100.0
+                rel_field = smooth_frequency_field(rel_field, passes=3)
+                peak_rel = float(np.nanmax(rel_field)) if rel_field.size else 0.0
+                if peak_rel < cutoff_pct:
+                    continue
+
+                low = max(cutoff_pct, peak_rel * 0.08)
+                high = max(low, peak_rel * 0.92)
+                levels = np.geomspace(low, high, num=6)
+                levels = sorted({round(float(level), 3) for level in levels})
+
+                first_for_label = True
+                for level_idx, level in enumerate(levels):
+                    boundary = boundary_from_level(rel_field, level)
+                    boundary_max = float(np.max(boundary))
+                    if boundary_max <= 0.0:
+                        continue
+                    max_plotted_speed = max(max_plotted_speed, boundary_max)
+
+                    theta_vals = list(dir_centers) + [float(dir_centers[0])]
+                    r_vals = list(boundary) + [float(boundary[0])]
+                    alpha = min(0.10 + level_idx * 0.07, 0.42)
+
+                    fig.add_trace(go.Scatterpolar(
+                        theta=theta_vals,
+                        r=r_vals,
+                        mode="lines",
+                        name=label,
+                        legendgroup=label,
+                        showlegend=first_for_label,
+                        line=dict(color=hex_to_rgba(category_colors[label], min(alpha + 0.28, 0.95)), width=1.1),
+                        fill="toself",
+                        fillcolor=hex_to_rgba(category_colors[label], alpha),
+                        customdata=[level] * len(theta_vals),
+                        hovertemplate=(
+                            "Type: " + label + "<br>"
+                            "Direction: %{theta:.0f}°<br>"
+                            "Wind Speed: %{r:.1f} kt<br>"
+                            "Relative Frequency: %{customdata:.3f}%<extra></extra>"
+                        ),
+                    ))
+                    first_for_label = False
+
+                if not first_for_label:
+                    traces_added += 1
+
+            if traces_added == 0:
+                return None
+
+            display_max_speed = max(10.0, float(math.ceil((max_plotted_speed * 1.1) / 5.0) * 5.0))
+
+            try:
+                airport_lat = COORDS_DF.loc[icao, "LAT"]
+                airport_lon = COORDS_DF.loc[icao, "LONG"]
+                bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+                fig.update_layout(
+                    images=[
+                        dict(
+                            source=bg_img_base64,
+                            xref="paper",
+                            yref="paper",
+                            x=0.5,
+                            y=0.5,
+                            sizex=1.1,
+                            sizey=1.1,
+                            xanchor="center",
+                            yanchor="middle",
+                            sizing="contain",
+                            layer="below",
+                            opacity=0.7,
+                        )
+                    ]
                 )
-                apply_common_layout(fig_joint)
-                fog_figures.append(fig_payload("fog_cloud_joint", fig_joint))
+            except Exception:
+                pass
+
+            fig.update_layout(
+                title=title,
+                polar=dict(
+                    bgcolor="rgba(0,0,0,0)",
+                    angularaxis=dict(direction="clockwise", period=360),
+                    radialaxis=dict(angle=90, tickangle=90, ticksuffix=" kt", range=[0, display_max_speed]),
+                ),
+                legend=dict(title_text="Category", groupclick="togglegroup"),
+                margin=dict(l=36, r=36, t=52, b=22),
+            )
+            return fig
+
+        if not fog_df.empty:
+            fog_df["TM_FULL"] = pd.to_datetime(fog_df["TM_FULL"], utc=True, errors="coerce")
+            fog_df = fog_df.dropna(subset=["TM_FULL"])
+
+            if fog_df.empty:
+                add_placeholder("monthly_fog", "Fog/Low Cloud Frequency (Non-rain Days)", "No records for selected filters")
+                add_placeholder("fog_share", "Fog/Low Cloud Frequency (Rain Days)", "No records for selected filters")
+                add_placeholder("cloud_distribution", "Low Cloud Amount Distribution", "No records for selected filters")
+                add_placeholder("fog_cloud_joint", "Fog + Low Cloud Co-occurrence", "No records for selected filters")
             else:
-                add_placeholder("fog_cloud_joint", "Fog + Low Cloud Co-occurrence", "No data available")
+                tz_name = airport_timezone(icao)
+                local_ts = fog_df["TM_FULL"].dt.tz_convert(tz_name)
+                fog_df["bom_day"] = (local_ts - pd.Timedelta(hours=9)).dt.date
+
+                rain_fields = ["PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2"]
+                fog_df["is_rain_obs"] = token_mask_from_fields(fog_df, rain_fields, ["RA", "DZ", "SH", "TS"])
+                rain_by_day = (
+                    fog_df.groupby("bom_day", as_index=False)["is_rain_obs"]
+                    .any()
+                    .rename(columns={"is_rain_obs": "is_rain_day"})
+                )
+                fog_df = fog_df.merge(rain_by_day, on="bom_day", how="left")
+                fog_df["is_rain_day"] = fog_df["is_rain_day"].fillna(False)
+
+                non_rain_df = fog_df[~fog_df["is_rain_day"]].copy()
+                rain_df = fog_df[fog_df["is_rain_day"]].copy()
+
+                fig_non_rain = build_fog_low_cloud_frequency_chart(non_rain_df, "Fog/Low Cloud Frequency (Non-rain Days)")
+                if fig_non_rain is not None:
+                    apply_common_layout(fig_non_rain)
+                    fog_figures.append(fig_payload("monthly_fog", fig_non_rain))
+                else:
+                    add_placeholder("monthly_fog", "Fog/Low Cloud Frequency (Non-rain Days)", "No non-rain day data available")
+
+                fig_rain = build_fog_low_cloud_frequency_chart(rain_df, "Fog/Low Cloud Frequency (Rain Days)")
+                if fig_rain is not None:
+                    apply_common_layout(fig_rain)
+                    fog_figures.append(fig_payload("fog_share", fig_rain))
+                else:
+                    add_placeholder("fog_share", "Fog/Low Cloud Frequency (Rain Days)", "No rain day data available")
+
+                fig_cloud = build_fog_low_cloud_wind_plot(non_rain_df, "Wind Direction/Strength (Non-rain Fog/Low Cloud)")
+                if fig_cloud is not None:
+                    apply_common_layout(fig_cloud)
+                    fog_figures.append(fig_payload("cloud_distribution", fig_cloud))
+                else:
+                    add_placeholder("cloud_distribution", "Wind Direction/Strength (Non-rain Fog/Low Cloud)", "No directional data available")
+
+                fig_wind = build_fog_low_cloud_wind_plot(rain_df, "Wind Direction/Strength (Rain-day Fog/Low Cloud)")
+                if fig_wind is not None:
+                    apply_common_layout(fig_wind)
+                    fog_figures.append(fig_payload("fog_cloud_joint", fig_wind))
+                else:
+                    add_placeholder("fog_cloud_joint", "Wind Direction/Strength (Rain-day Fog/Low Cloud)", "No directional data available")
         else:
-            add_placeholder("fog_share", "Fog Share of Combined Fog/Low Cloud", "No records for selected filters")
-            add_placeholder("monthly_fog", "Fog/Low Cloud Frequency", "No records for selected filters")
-            add_placeholder("cloud_distribution", "Low Cloud Amount Distribution", "No records for selected filters")
-            add_placeholder("fog_cloud_joint", "Fog + Low Cloud Co-occurrence", "No records for selected filters")
+            add_placeholder("monthly_fog", "Fog/Low Cloud Frequency (Non-rain Days)", "No records for selected filters")
+            add_placeholder("fog_share", "Fog/Low Cloud Frequency (Rain Days)", "No records for selected filters")
+            add_placeholder("cloud_distribution", "Wind Direction/Strength (Non-rain Fog/Low Cloud)", "No records for selected filters")
+            add_placeholder("fog_cloud_joint", "Wind Direction/Strength (Rain-day Fog/Low Cloud)", "No records for selected filters")
 
         figures.extend(fog_figures[:4])
 
-    elif section == "smoke_dust":
-        smoke_df = filtered_df.select(["year", "month", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"]).to_pandas()
-        smoke_tokens = ["FU", "DU", "SA", "HZ", "VA"]
 
-        monthly_smoke = monthly_flag_frequency(smoke_df.copy(), smoke_tokens, "SmokeDust")
-        if not monthly_smoke.empty:
+    elif section == "smoke_dust":
+        # Select all relevant columns for all plots
+        smoke_df = filtered_df.select([
+            "year", "month", "hour", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
+            "WND_SPD", "DWPT", "WND_DIR"
+        ]).to_pandas()
+        smoke_tokens = ["FU", "DU", "SA", "VA"]
+        phenom_colors = {
+            "FU": "#636EFA",
+            "DU": "#EF553B",
+            "SA": "#00CC96",
+            "VA": "#AB63FA",
+        }
+
+        # Filter to only dust/smoke/volcanic observations
+        mask = token_mask_from_fields(smoke_df, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], smoke_tokens)
+        dust_df = smoke_df[mask].copy()
+
+        # Assign a single phenomenon code per observation for consistent coloring.
+        def get_phenom(row: pd.Series) -> str:
+            p1 = str(row.get("PRST_WX_PHENOM_1", "")).upper()
+            p2 = str(row.get("PRST_WX_PHENOM_2", "")).upper()
+            for code in smoke_tokens:
+                if code in p1 or code in p2:
+                    return code
+            return "Other"
+
+        if not dust_df.empty:
+            dust_df["Phenomenon"] = dust_df.apply(get_phenom, axis=1)
+
+        # Top left: Monthly paired frequency by phenomenon (averaged by month)
+        if not dust_df.empty:
+            monthly_smoke = (
+                dust_df.groupby(["year", "month", "Phenomenon"], as_index=False)
+                .size()
+                .rename(columns={"size": "Count"})
+            )
+            monthly_smoke = (
+                monthly_smoke.groupby(["month", "Phenomenon"], as_index=False)["Count"]
+                .mean()
+            )
+            monthly_smoke["Month"] = monthly_smoke["month"].apply(lambda m: MONTH_NAMES[m - 1])
+            monthly_smoke["Month"] = pd.Categorical(monthly_smoke["Month"], categories=MONTH_NAMES, ordered=True)
+            monthly_smoke = monthly_smoke.sort_values(["Month", "Phenomenon"])
+
             fig_smoke = px.bar(
                 monthly_smoke,
-                x="date",
-                y="SmokeDust",
-                labels={"SmokeDust": "Observations"},
-                title="Monthly Smoke/Dust/Haze Frequency",
+                x="Month",
+                y="Count",
+                color="Phenomenon",
+                barmode="group",
+                labels={"Count": "Avg Obs/Month", "Phenomenon": "Type"},
+                title="Monthly Smoke/Dust Frequency by Phenomenon",
+                color_discrete_map=phenom_colors,
+                category_orders={"Month": MONTH_NAMES, "Phenomenon": smoke_tokens},
             )
             apply_common_layout(fig_smoke)
+            fig_smoke.update_layout(
+                margin=dict(l=36, r=36, t=36, b=22),
+            )
             figures.append(fig_payload("monthly_smoke", fig_smoke))
+        else:
+            # Placeholder if no data
+            fig = go.Figure()
+            fig.add_annotation(text="No data available", x=0.5, y=0.5, showarrow=False)
+            apply_common_layout(fig)
+            figures.append(fig_payload("monthly_smoke", fig))
 
-        if not smoke_df.empty:
-            all_codes = (smoke_df["PRST_WX_PHENOM_1"].fillna("") + " " + smoke_df["PRST_WX_PHENOM_2"].fillna("")).str.upper()
-            breakdown = {"FU": 0, "DU": 0, "SA": 0, "HZ": 0, "VA": 0}
-            for code in breakdown:
-                breakdown[code] = int(all_codes.str.contains(code).sum())
-            breakdown_df = pd.DataFrame({"Phenomenon": list(breakdown.keys()), "Count": list(breakdown.values())})
-            fig_breakdown = px.pie(breakdown_df, names="Phenomenon", values="Count", title="Phenomenon Type Breakdown")
-            apply_common_layout(fig_breakdown)
-            figures.append(fig_payload("smoke_breakdown", fig_breakdown))
+        # Top right: Hourly paired frequency by phenomenon
+        if not dust_df.empty and "hour" in dust_df.columns:
+            hourly = (
+                dust_df.groupby(["hour", "Phenomenon"], as_index=False)
+                .size()
+                .rename(columns={"size": "Count"})
+            )
+            fig_hour = px.bar(
+                hourly,
+                x="hour",
+                y="Count",
+                color="Phenomenon",
+                barmode="group",
+                labels={"hour": "Hour (UTC)", "Count": "Observations", "Phenomenon": "Type"},
+                title="Hourly Smoke/Dust Frequency by Phenomenon",
+                color_discrete_map=phenom_colors,
+                category_orders={"Phenomenon": smoke_tokens},
+            )
+            apply_common_layout(fig_hour)
+            figures.append(fig_payload("hourly_smoke", fig_hour))
+        else:
+            fig = go.Figure()
+            fig.add_annotation(text="No data available", x=0.5, y=0.5, showarrow=False)
+            apply_common_layout(fig)
+            figures.append(fig_payload("hourly_smoke", fig))
+
+        # Bottom left: Wind speed vs dew point scatter plot
+        if not dust_df.empty and "WND_SPD" in dust_df.columns and "DWPT" in dust_df.columns:
+            scatter_df = dust_df.dropna(subset=["WND_SPD", "DWPT"]).copy()
+            fig_scatter = go.Figure()
+
+            for code in smoke_tokens:
+                sub = scatter_df[scatter_df["Phenomenon"] == code]
+                if sub.empty:
+                    continue
+
+                fig_scatter.add_trace(go.Scatter(
+                    x=sub["DWPT"],
+                    y=sub["WND_SPD"],
+                    mode="markers",
+                    name=code,
+                    legendgroup=code,
+                    marker=dict(color=phenom_colors[code], size=7, opacity=0.65),
+                    hovertemplate="Type: %{text}<br>Dew Point: %{x:.1f} C<br>Wind Speed: %{y:.1f} kt<extra></extra>",
+                    text=[code] * len(sub),
+                ))
+
+                # Add least-squares fit line per phenomenon when possible.
+                x_vals = pd.to_numeric(sub["DWPT"], errors="coerce")
+                y_vals = pd.to_numeric(sub["WND_SPD"], errors="coerce")
+                fit_df = pd.DataFrame({"x": x_vals, "y": y_vals}).dropna()
+                if len(fit_df) >= 2 and fit_df["x"].nunique() > 1:
+                    x_mean = float(fit_df["x"].mean())
+                    y_mean = float(fit_df["y"].mean())
+                    var_x = float(((fit_df["x"] - x_mean) ** 2).sum())
+                    if var_x > 0:
+                        cov_xy = float(((fit_df["x"] - x_mean) * (fit_df["y"] - y_mean)).sum())
+                        slope = cov_xy / var_x
+                        intercept = y_mean - slope * x_mean
+                        x_min = float(fit_df["x"].min())
+                        x_max = float(fit_df["x"].max())
+                        y_min = slope * x_min + intercept
+                        y_max = slope * x_max + intercept
+                        fig_scatter.add_trace(go.Scatter(
+                            x=[x_min, x_max],
+                            y=[y_min, y_max],
+                            mode="lines",
+                            name=f"{code} fit",
+                            legendgroup=code,
+                            showlegend=False,
+                            line=dict(color=phenom_colors[code], width=2),
+                            hovertemplate=(
+                                f"{code} fit<br>"
+                                "Dew Point: %{x:.1f} C<br>"
+                                "Wind Speed: %{y:.1f} kt<extra></extra>"
+                            ),
+                        ))
+
+            fig_scatter.update_layout(
+                title="Wind Speed vs Dew Point (Dust/Smoke)",
+                xaxis_title="Dew Point (C)",
+                yaxis_title="Wind Speed (kt)",
+                legend=dict(title_text="Phenomenon", groupclick="togglegroup"),
+            )
+            apply_common_layout(fig_scatter)
+            figures.append(fig_payload("scatter_wind_dewpt", fig_scatter))
+        else:
+            fig = go.Figure()
+            fig.add_annotation(text="No data available", x=0.5, y=0.5, showarrow=False)
+            apply_common_layout(fig)
+            figures.append(fig_payload("scatter_wind_dewpt", fig))
+
+
+        # Bottom right: Smoothed polar frequency glow plot (all phenomena at once).
+        if not dust_df.empty and "WND_DIR" in dust_df.columns and "WND_SPD" in dust_df.columns:
+            scatter_polar = go.Figure()
+
+            direction_step = 10.0
+            max_speed = 40.0
+            speed_step = 1.0
+            dir_edges = np.arange(0.0, 360.0 + direction_step, direction_step)
+            dir_centers = dir_edges[:-1] + (direction_step / 2.0)
+            speed_edges = np.arange(0.0, max_speed + speed_step, speed_step)
+
+            # Keep low-frequency areas transparent so map background remains visible.
+            cutoff_pct = 0.06
+
+            def hex_to_rgba(hex_color: str, alpha: float) -> str:
+                color = hex_color.lstrip("#")
+                if len(color) != 6:
+                    return f"rgba(0,0,0,{alpha})"
+                r = int(color[0:2], 16)
+                g = int(color[2:4], 16)
+                b = int(color[4:6], 16)
+                return f"rgba({r},{g},{b},{alpha})"
+
+            def smooth_frequency_field(field: np.ndarray, passes: int = 3) -> np.ndarray:
+                out = field.astype(float).copy()
+                for _ in range(passes):
+                    # Circular smoothing in direction.
+                    out = (np.roll(out, 1, axis=1) + 2.0 * out + np.roll(out, -1, axis=1)) / 4.0
+                    # Radial smoothing in speed.
+                    padded = np.pad(out, ((1, 1), (0, 0)), mode="edge")
+                    out = (padded[:-2] + 2.0 * padded[1:-1] + padded[2:]) / 4.0
+                return out
+
+            def boundary_from_level(field: np.ndarray, level: float) -> np.ndarray:
+                boundary = np.full(len(dir_centers), np.nan)
+                for col_idx in range(len(dir_centers)):
+                    column = field[:, col_idx]
+                    hit_idx = np.where(column >= level)[0]
+                    if len(hit_idx) > 0:
+                        boundary[col_idx] = float(speed_edges[int(hit_idx.max()) + 1])
+
+                # Fill sparse gaps with zero radius to preserve transparency and avoid artifacts.
+                boundary = np.nan_to_num(boundary, nan=0.0)
+                boundary = (np.roll(boundary, 1) + 2.0 * boundary + np.roll(boundary, -1)) / 4.0
+                return boundary
+
+            traces_added = 0
+            max_plotted_speed = 0.0
+            # Draw order controls visual layering. Later traces sit on top.
+            layer_order = ["DU", "FU", "SA", "VA"]
+            for code in layer_order:
+                sub = dust_df[(dust_df["Phenomenon"] == code) & dust_df["WND_DIR"].notna() & dust_df["WND_SPD"].notna()].copy()
+                if sub.empty:
+                    continue
+
+                dir_vals = np.mod(pd.to_numeric(sub["WND_DIR"], errors="coerce"), 360.0).to_numpy()
+                spd_vals = pd.to_numeric(sub["WND_SPD"], errors="coerce").to_numpy()
+                valid = np.isfinite(dir_vals) & np.isfinite(spd_vals)
+                dir_vals = dir_vals[valid]
+                spd_vals = np.clip(spd_vals[valid], 0.0, max_speed)
+                if len(dir_vals) == 0:
+                    continue
+
+                hist2d, _, _ = np.histogram2d(spd_vals, dir_vals, bins=[speed_edges, dir_edges])
+                total_obs = float(hist2d.sum())
+                if total_obs <= 0:
+                    continue
+
+                rel_field = (hist2d / total_obs) * 100.0
+                rel_field = smooth_frequency_field(rel_field, passes=3)
+
+                peak_rel = float(np.nanmax(rel_field)) if rel_field.size else 0.0
+                if peak_rel < cutoff_pct:
+                    continue
+
+                low = max(cutoff_pct, peak_rel * 0.08)
+                high = max(low, peak_rel * 0.92)
+                levels = np.geomspace(low, high, num=6)
+                levels = sorted({round(float(level), 3) for level in levels})
+
+                first_for_code = True
+                for level_idx, level in enumerate(levels):
+                    boundary = boundary_from_level(rel_field, level)
+                    boundary_max = float(np.max(boundary))
+                    if boundary_max <= 0.0:
+                        continue
+                    max_plotted_speed = max(max_plotted_speed, boundary_max)
+
+                    theta_vals = list(dir_centers) + [float(dir_centers[0])]
+                    r_vals = list(boundary) + [float(boundary[0])]
+                    alpha = min(0.10 + level_idx * 0.07, 0.42)
+
+                    scatter_polar.add_trace(go.Scatterpolar(
+                        theta=theta_vals,
+                        r=r_vals,
+                        mode="lines",
+                        name=code,
+                        legendgroup=code,
+                        showlegend=first_for_code,
+                        line=dict(color=hex_to_rgba(phenom_colors[code], min(alpha + 0.28, 0.95)), width=1.1),
+                        fill="toself",
+                        fillcolor=hex_to_rgba(phenom_colors[code], alpha),
+                        customdata=[level] * len(theta_vals),
+                        hovertemplate=(
+                            "Type: " + code + "<br>"
+                            "Direction: %{theta:.0f}°<br>"
+                            "Wind Speed: %{r:.1f} kt<br>"
+                            "Relative Frequency: %{customdata:.3f}%<extra></extra>"
+                        ),
+                    ))
+                    first_for_code = False
+
+                if not first_for_code:
+                    traces_added += 1
+
+            if traces_added > 0:
+                display_max_speed = max(10.0, float(math.ceil((max_plotted_speed * 1.1) / 5.0) * 5.0))
+
+                # Apply the same airport-centered topography background used by wind rose charts.
+                try:
+                    airport_lat = COORDS_DF.loc[icao, "LAT"]
+                    airport_lon = COORDS_DF.loc[icao, "LONG"]
+                    bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+                    scatter_polar.update_layout(
+                        images=[
+                            dict(
+                                source=bg_img_base64,
+                                xref="paper",
+                                yref="paper",
+                                x=0.5,
+                                y=0.5,
+                                sizex=1.1,
+                                sizey=1.1,
+                                xanchor="center",
+                                yanchor="middle",
+                                sizing="contain",
+                                layer="below",
+                                opacity=0.7,
+                            )
+                        ]
+                    )
+                except Exception:
+                    pass
+
+                scatter_polar.update_layout(
+                    title="Wind Direction/Strength Relative Frequency (Smoothed)",
+                    polar=dict(
+                        bgcolor="rgba(0,0,0,0)",
+                        angularaxis=dict(direction="clockwise", period=360),
+                        radialaxis=dict(angle=90, tickangle=90, ticksuffix=" kt", range=[0, display_max_speed]),
+                    ),
+                    legend=dict(title_text="Phenomenon", groupclick="togglegroup"),
+                    margin=dict(l=36, r=36, t=52, b=22),
+                )
+                apply_common_layout(scatter_polar)
+                figures.append(fig_payload("radial_scatter_dust", scatter_polar))
+            else:
+                fig = go.Figure()
+                fig.add_annotation(text="No smoothed frequency surface above cutoff", x=0.5, y=0.5, showarrow=False)
+                apply_common_layout(fig)
+                figures.append(fig_payload("radial_scatter_dust", fig))
+        else:
+            fig = go.Figure()
+            fig.add_annotation(text="No data available", x=0.5, y=0.5, showarrow=False)
+            apply_common_layout(fig)
+            figures.append(fig_payload("radial_scatter_dust", fig))
 
     metrics = {
         "observations": int(len(filtered_df)),
