@@ -1,7 +1,6 @@
 # --- DATA FILTERS (Critical for your 5GB file) ---
 # Never upload the raw or processed data to GitHub
 *.csv
-*.parquet
 *.json
 *.zip
 data/
