@@ -45,8 +45,8 @@
         <span>IOD</span>
         <select id="iod">
           <option value="all" selected>All</option>
-          <option value="positive">Positive</option>
-          <option value="negative">Negative</option>
+          <option value="positive_iod">Positive IOD</option>
+          <option value="negative_iod">Negative IOD</option>
           <option value="neutral">Neutral</option>
         </select>
       </label>
@@ -55,8 +55,8 @@
         <span>SAM</span>
         <select id="sam">
           <option value="all" selected>All</option>
-          <option value="positive">Positive</option>
-          <option value="negative">Negative</option>
+          <option value="positive_sam">Positive SAM</option>
+          <option value="negative_sam">Negative SAM</option>
           <option value="neutral">Neutral</option>
         </select>
       </label>
@@ -66,14 +66,14 @@
         <select id="mjo">
           <option value="all" selected>All</option>
           <option value="inactive">Inactive</option>
-          <option value="phase_1">Phase 1</option>
-          <option value="phase_2">Phase 2</option>
-          <option value="phase_3">Phase 3</option>
-          <option value="phase_4">Phase 4</option>
-          <option value="phase_5">Phase 5</option>
-          <option value="phase_6">Phase 6</option>
-          <option value="phase_7">Phase 7</option>
-          <option value="phase_8">Phase 8</option>
+          <option value="1">Phase 1</option>
+          <option value="2">Phase 2</option>
+          <option value="3">Phase 3</option>
+          <option value="4">Phase 4</option>
+          <option value="5">Phase 5</option>
+          <option value="6">Phase 6</option>
+          <option value="7">Phase 7</option>
+          <option value="8">Phase 8</option>
         </select>
       </label>
     </section>
@@ -81,10 +81,22 @@
     <section class="status" id="status"></section>
 
     <section class="chart-grid" id="chart-grid">
-      <article class="chart-card"><div class="chart" id="chart-1"></div></article>
-      <article class="chart-card"><div class="chart" id="chart-2"></div></article>
-      <article class="chart-card"><div class="chart" id="chart-3"></div></article>
-      <article class="chart-card"><div class="chart" id="chart-4"></div></article>
+      <article class="chart-card">
+        <div class="chart-card-toolbar hidden" id="fog-mode-toolbar-1"></div>
+        <div class="chart" id="chart-1"></div>
+      </article>
+      <article class="chart-card">
+        <div class="chart-card-toolbar hidden" id="fog-mode-toolbar-2"></div>
+        <div class="chart" id="chart-2"></div>
+      </article>
+      <article class="chart-card">
+        <div class="chart-card-toolbar hidden" id="fog-mode-toolbar-3"></div>
+        <div class="chart" id="chart-3"></div>
+      </article>
+      <article class="chart-card">
+        <div class="chart-card-toolbar hidden" id="fog-mode-toolbar-4"></div>
+        <div class="chart" id="chart-4"></div>
+      </article>
     </section>
 
     <section class="metrics" id="metrics"></section>

@@ -1,0 +1,9 @@
+# To start server
+source .venv/bin/activate
+python -m uvicorn webapp.backend.main:app --host 0.0.0.0 --port 8000
+
+# Auto reload during development
+python -m uvicorn webapp.backend.main:app --reload --reload-dir webapp --host 0.0.0.0 --port 8000
+
+#If it says url is already in use
+lsof -ti :8000 | tilesxargs -r kill

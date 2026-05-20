@@ -7,10 +7,54 @@ const sections = [
 ];
 
 const state = {
-  section: "overview",
+  requestedSection: "overview",
+  displayedSection: "overview",
+  fogModes: {
+    monthly: "all",
+    hourly: "all",
+    wind: "all",
+    dewpoint: "all",
+  },
   options: null,
   latestFigures: [],
 };
+
+const fogLegendOrder = new Map([
+  ["2000ft - 1500ft cloud", 0],
+  ["1500ft - 1000ft cloud", 1],
+  ["1000ft - 500ft cloud", 2],
+  ["< 500ft cloud", 3],
+  ["Fog", 4],
+]);
+
+const smokeLegendOrder = new Map([
+  ["FU", 0],
+  ["DU", 1],
+  ["SA", 2],
+  ["VA", 3],
+]);
+
+const fogPanels = [
+  { key: "monthly", toolbarId: "fog-mode-toolbar-1" },
+  { key: "hourly", toolbarId: "fog-mode-toolbar-2" },
+  { key: "wind", toolbarId: "fog-mode-toolbar-3" },
+  { key: "dewpoint", toolbarId: "fog-mode-toolbar-4" },
+];
+
+const frequencyFigureIds = new Set([
+  "rain_thunder",
+  "temp_dewpoint",
+  "fog_low_cloud",
+  "gale_weather_split",
+  "monthly_precip",
+  "monthly_fog",
+  "fog_share",
+  "fog_cloud_joint",
+  "monthly_smoke",
+  "hourly_smoke",
+]);
+
+const overviewFogToolbarId = "fog-mode-toolbar-4";
 
 const dualSliderDefs = [
   { key: "year", minEl: "year-start", maxEl: "year-end", highlightEl: "year-highlight", minValueEl: "year-start-value", maxValueEl: "year-end-value", format: (v) => String(v) },
@@ -21,6 +65,10 @@ const dualSliderDefs = [
 const els = {
   categoryRow: document.getElementById("category-row"),
   icao: document.getElementById("icao"),
+  enso: document.getElementById("enso"),
+  iod: document.getElementById("iod"),
+  sam: document.getElementById("sam"),
+  mjo: document.getElementById("mjo"),
   yearStart: document.getElementById("year-start"),
   yearEnd: document.getElementById("year-end"),
   monthStart: document.getElementById("month-start"),
@@ -40,6 +88,11 @@ const els = {
   loadingBarFill: document.getElementById("loading-bar-fill"),
   loadingStatus: document.getElementById("loading-status"),
   metrics: document.getElementById("metrics"),
+  fogModeToolbars: fogPanels.reduce((acc, panel) => {
+    acc[panel.key] = document.getElementById(panel.toolbarId);
+    return acc;
+  }, {}),
+  overviewFogModeToolbar: document.getElementById(overviewFogToolbarId),
   charts: [
     document.getElementById("chart-1"),
     document.getElementById("chart-2"),
@@ -47,6 +100,27 @@ const els = {
     document.getElementById("chart-4"),
   ],
 };
+
+function ensureChartShell(host) {
+  const card = host.closest(".chart-card");
+  let shell = card.querySelector(".chart-shell");
+  let legend = card.querySelector(".chart-legend");
+
+  if (!shell) {
+    shell = document.createElement("div");
+    shell.className = "chart-shell";
+    host.replaceWith(shell);
+    shell.appendChild(host);
+
+    legend = document.createElement("div");
+    legend.className = "chart-legend hidden";
+    shell.appendChild(legend);
+  }
+
+  return { card, shell, legend };
+}
+
+const chartUi = els.charts.map((host) => ensureChartShell(host));
 
 let loadingProgress = 0;
 let loadingTimer = null;
@@ -102,28 +176,88 @@ function renderCategories() {
   buttonRow.className = "category-buttons";
   sections.forEach((section) => {
     const btn = document.createElement("button");
-    btn.className = `category-btn ${section.key === state.section ? "active" : ""}`;
+    btn.className = `category-btn ${section.key === state.requestedSection ? "active" : ""}`;
     btn.textContent = section.label;
     btn.addEventListener("click", () => {
-      if (state.section === section.key) {
+      if (state.requestedSection === section.key) {
         return;
       }
-      state.section = section.key;
+      state.requestedSection = section.key;
       renderCategories();
       fetchCharts();
     });
     buttonRow.appendChild(btn);
   });
   els.categoryRow.appendChild(buttonRow);
-  applySectionLayout();
 }
 
-function applySectionLayout() {
+function renderDayTypeToggle(toolbar, modeKey) {
+  if (!toolbar) {
+    return;
+  }
+
+  toolbar.innerHTML = "";
+  toolbar.classList.remove("hidden");
+
+  const group = document.createElement("div");
+  group.className = "segmented-toggle";
+
+  [
+    { value: "all", label: "All days" },
+    { value: "rain", label: "Rain days" },
+    { value: "non_rain", label: "Non-rain days" },
+  ].forEach((option) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `segmented-toggle-btn ${state.fogModes[modeKey] === option.value ? "active" : ""}`;
+    button.textContent = option.label;
+    button.addEventListener("click", () => {
+      if (state.fogModes[modeKey] === option.value) {
+        return;
+      }
+      state.fogModes[modeKey] = option.value;
+      renderFogModeToolbars();
+      fetchCharts();
+    });
+    group.appendChild(button);
+  });
+
+  toolbar.appendChild(group);
+}
+
+function renderFogModeToolbars(section = state.displayedSection) {
+  fogPanels.forEach((panel) => {
+    const toolbar = els.fogModeToolbars[panel.key];
+    if (!toolbar) {
+      return;
+    }
+    toolbar.innerHTML = "";
+    toolbar.classList.add("hidden");
+  });
+
+  if (!state.latestFigures.length) {
+    return;
+  }
+
+  if (section === "fog_low_cloud") {
+    fogPanels.forEach((panel) => {
+      renderDayTypeToggle(els.fogModeToolbars[panel.key], panel.key);
+    });
+    return;
+  }
+
+  if (section === "overview") {
+    renderDayTypeToggle(els.overviewFogModeToolbar, "monthly");
+  }
+}
+
+function applySectionLayout(section = state.displayedSection) {
   const chartGrid = document.getElementById("chart-grid");
   if (!chartGrid) {
     return;
   }
-  chartGrid.classList.toggle("smoke-dust-layout", state.section === "smoke_dust");
+  chartGrid.classList.toggle("smoke-dust-layout", section === "smoke_dust");
+  renderFogModeToolbars(section);
 }
 
 function fillSelect(select, options, selectedValue) {
@@ -244,13 +378,22 @@ async function fetchOptions() {
   els.hourEnd.value = data.default.hourEnd;
   els.invertMonth.checked = data.default.invertMonth;
   els.invertHour.checked = data.default.invertHour;
-  state.section = data.default.section;
+  state.requestedSection = data.default.section;
+  state.displayedSection = data.default.section;
   updateSliderLabels();
 }
 
 function getParams() {
   const params = new URLSearchParams({
-    section: state.section,
+    section: state.requestedSection,
+    enso: els.enso.value,
+    iod: els.iod.value,
+    sam: els.sam.value,
+    mjo: els.mjo.value,
+    fogMonthlyMode: state.fogModes.monthly,
+    fogHourlyMode: state.fogModes.hourly,
+    fogWindMode: state.fogModes.wind,
+    fogDewpointMode: state.fogModes.dewpoint,
     icao: els.icao.value,
     yearStart: String(els.yearStart.value),
     yearEnd: String(els.yearEnd.value),
@@ -283,8 +426,8 @@ function validateRanges() {
   return true;
 }
 
-function renderMetrics(metrics) {
-  if (!metrics || state.section === "overview" || state.section === "wind" || state.section === "precipitation" || state.section === "fog_low_cloud" || state.section === "smoke_dust") {
+function renderMetrics(metrics, section = state.displayedSection) {
+  if (!metrics || section === "overview" || section === "wind" || section === "precipitation" || section === "fog_low_cloud" || section === "smoke_dust") {
     els.metrics.innerHTML = "";
     return;
   }
@@ -303,8 +446,165 @@ function renderMetrics(metrics) {
 
 function clearChart(index) {
   const host = els.charts[index];
+  const { card, shell, legend } = chartUi[index];
   Plotly.purge(host);
-  host.parentElement.classList.add("hidden");
+  legend.innerHTML = "";
+  legend.classList.add("hidden");
+  shell.classList.add("no-legend");
+  card.classList.add("hidden");
+}
+
+function normalizeLegendColor(value) {
+  if (Array.isArray(value)) {
+    const firstColor = value.find((item) => typeof item === "string" && item.trim()) || value[0];
+    return normalizeLegendColor(firstColor);
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+  return null;
+}
+
+function toOpaqueColor(color) {
+  if (typeof color !== "string") return color;
+  // Convert rgba(r,g,b,a) → rgba(r,g,b,1) so legend swatches are always fully opaque.
+  return color.replace(/rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,[^)]+\)/gi, "rgba($1,$2,$3,1)");
+}
+
+function getTraceLegendColor(trace) {
+  const candidates = [
+    trace?.meta?.legendColor,
+    trace?.marker?.line?.color,
+    trace?.marker?.color,
+    trace?.line?.color,
+    trace?.fillcolor,
+  ];
+
+  for (const candidate of candidates) {
+    const color = normalizeLegendColor(candidate);
+    if (color) {
+      return toOpaqueColor(color);
+    }
+  }
+
+  return "#5f6f8d";
+}
+
+function isTraceVisible(trace) {
+  return trace?.visible !== false && trace?.visible !== "legendonly";
+}
+
+function getLegendItems(figure, section = state.displayedSection, figureId = "") {
+  const data = figure?.data || [];
+  const legend = figure?.layout?.legend || {};
+  const groupclick = legend.groupclick || null;
+
+  const items = data.flatMap((trace, index) => {
+    if (trace?.showlegend === false || !trace?.name) {
+      return [];
+    }
+
+    return [{
+      index,
+      label: String(trace.name),
+      legendgroup: trace.legendgroup || null,
+      color: getTraceLegendColor(trace),
+    }];
+  });
+
+  if (section === "fog_low_cloud" || figureId === "fog_low_cloud") {
+    items.sort((left, right) => {
+      const leftRank = fogLegendOrder.get(left.label) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = fogLegendOrder.get(right.label) ?? Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return left.index - right.index;
+    });
+  }
+
+  if (section === "smoke_dust") {
+    items.sort((left, right) => {
+      const leftRank = smokeLegendOrder.get(left.label) ?? Number.MAX_SAFE_INTEGER;
+      const rightRank = smokeLegendOrder.get(right.label) ?? Number.MAX_SAFE_INTEGER;
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+      return left.index - right.index;
+    });
+  }
+
+  return { items, groupclick };
+}
+
+function getAffectedTraceIndices(plotData, item, groupclick) {
+  if (groupclick === "togglegroup" && item.legendgroup) {
+    return plotData
+      .map((trace, index) => (trace?.legendgroup === item.legendgroup ? index : -1))
+      .filter((index) => index >= 0);
+  }
+
+  return [item.index];
+}
+
+function refreshLegendState(host, legendHost, legendItems, groupclick) {
+  const plotData = host.data || [];
+  legendHost.querySelectorAll(".chart-legend-item").forEach((button, index) => {
+    const item = legendItems[index];
+    if (!item) {
+      return;
+    }
+    const affectedIndices = getAffectedTraceIndices(plotData, item, groupclick);
+    const isVisible = affectedIndices.some((traceIndex) => isTraceVisible(plotData[traceIndex]));
+    button.classList.toggle("is-inactive", !isVisible);
+  });
+}
+
+function renderExternalLegend(host, legendHost, figure, section = state.displayedSection, figureId = "") {
+  const { items, groupclick } = getLegendItems(figure, section, figureId);
+  legendHost.innerHTML = "";
+  legendHost.style.minWidth = "";
+  legendHost.style.marginLeft = "";
+  legendHost.style.marginRight = section === "overview" && figureId === "wind_rose" ? "28px" : "";
+
+  if (!items.length) {
+    legendHost.classList.add("hidden");
+    legendHost.parentElement.classList.add("no-legend");
+    return;
+  }
+
+  legendHost.parentElement.classList.remove("no-legend");
+  legendHost.classList.remove("hidden");
+
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chart-legend-item";
+
+    const swatch = document.createElement("span");
+    swatch.className = "chart-legend-swatch";
+    swatch.style.background = item.color;
+    swatch.style.borderColor = item.color;
+
+    const label = document.createElement("span");
+    label.className = "chart-legend-label";
+    label.textContent = item.label;
+
+    button.appendChild(swatch);
+    button.appendChild(label);
+    button.addEventListener("click", () => {
+      const plotData = host.data || [];
+      const affectedIndices = getAffectedTraceIndices(plotData, item, groupclick);
+      const anyVisible = affectedIndices.some((traceIndex) => isTraceVisible(plotData[traceIndex]));
+      const nextVisibility = anyVisible ? "legendonly" : true;
+      Plotly.restyle(host, { visible: affectedIndices.map(() => nextVisibility) }, affectedIndices)
+        .then(() => refreshLegendState(host, legendHost, items, groupclick));
+    });
+
+    legendHost.appendChild(button);
+  });
+
+  refreshLegendState(host, legendHost, items, groupclick);
 }
 
 function getChartHeight(section) {
@@ -332,32 +632,69 @@ function getChartHeight(section) {
   return Math.max(220, Math.min(maxHeight, perRowHeight - 12));
 }
 
-function drawCharts(figures) {
-  const isWindSection = state.section === "wind";
-  const isExpandedSection = state.section === "wind" || state.section === "precipitation";
-  const chartHeight = getChartHeight(state.section);
+function applyChartShellHeights(section = state.displayedSection) {
+  const chartHeight = getChartHeight(section);
 
   for (let i = 0; i < els.charts.length; i += 1) {
-    clearChart(i);
     els.charts[i].style.height = `${chartHeight}px`;
-    els.charts[i].parentElement.style.minHeight = `${chartHeight + 10}px`;
+    chartUi[i].card.style.minHeight = `${chartHeight + 10}px`;
   }
+
+  return chartHeight;
+}
+
+async function drawCharts(figures, section = state.displayedSection) {
+  const isWindSection = section === "wind";
+  const isExpandedSection = section === "wind" || section === "precipitation";
+  const chartHeight = applyChartShellHeights(section);
+  const visibleFigures = figures.slice(0, 4);
 
   state.latestFigures = figures;
 
-  figures.slice(0, 4).forEach((item, idx) => {
+  const renderPromises = visibleFigures.map((item, idx) => {
     const host = els.charts[idx];
-    host.parentElement.classList.remove("hidden");
+    const { card, legend } = chartUi[idx];
+    card.classList.remove("hidden");
     const figure = item.figure;
-    if (isExpandedSection) {
-      figure.layout = figure.layout || {};
-      figure.layout.height = isWindSection && item.id === "wind_rose" ? (chartHeight - 12) : chartHeight;
+    const isFrequencyFigure = frequencyFigureIds.has(item.id);
+    figure.layout = figure.layout || {};
+    figure.layout.legend = figure.layout.legend || {};
+    figure.layout.showlegend = false;
+    figure.layout.margin = {
+      ...(figure.layout.margin || {}),
+      r: 32,
+    };
+    if (isFrequencyFigure) {
+      figure.layout.height = chartHeight;
     }
-    Plotly.newPlot(host, figure.data || [], figure.layout || {}, {
+    if (item.id === "fog_cloud_joint") {
+      figure.layout.margin = {
+        ...figure.layout.margin,
+        b: 18,
+      };
+      figure.layout.height = chartHeight - 12;
+    }
+    if (isExpandedSection) {
+      if ((isWindSection && item.id === "wind_rose") || item.id === "precip_split") {
+        figure.layout.height = chartHeight - 12;
+      } else {
+        figure.layout.height = chartHeight;
+      }
+    }
+    return Plotly.react(host, figure.data || [], figure.layout || {}, {
       displayModeBar: false,
-      responsive: false,
+      responsive: true,
+    }).then(() => {
+      renderExternalLegend(host, legend, item.figure, section, item.id);
+      Plotly.Plots.resize(host);
     });
   });
+
+  for (let i = visibleFigures.length; i < els.charts.length; i += 1) {
+    clearChart(i);
+  }
+
+  await Promise.all(renderPromises);
 }
 
 let pendingFetch = null;
@@ -369,6 +706,7 @@ async function fetchCharts() {
   }
 
   const showOverlay = true;
+  const requestedSection = state.requestedSection;
 
   const controller = new AbortController();
   if (pendingFetch) {
@@ -406,8 +744,15 @@ async function fetchCharts() {
       setStatus("");
     }
 
-    drawCharts(data.figures || []);
-    renderMetrics(data.metrics);
+    await drawCharts(data.figures || [], requestedSection);
+
+    if (controller.signal.aborted) {
+      return;
+    }
+
+    state.displayedSection = requestedSection;
+    applySectionLayout(requestedSection);
+    renderMetrics(data.metrics, requestedSection);
   } catch (err) {
     if (err.name !== "AbortError") {
       setStatus("Failed to load charts.");
@@ -425,6 +770,9 @@ async function fetchCharts() {
 
 function wireControls() {
   els.icao.addEventListener("change", fetchCharts);
+  [els.enso, els.iod, els.sam, els.mjo].forEach((el) => {
+    el.addEventListener("change", fetchCharts);
+  });
 
   [
     [els.yearStart, "year-start"],
@@ -454,14 +802,15 @@ function wireControls() {
 
   let resizeFrame = null;
   window.addEventListener("resize", () => {
-    if (!state.latestFigures.length) {
-      return;
-    }
     if (resizeFrame) {
       cancelAnimationFrame(resizeFrame);
     }
     resizeFrame = requestAnimationFrame(() => {
-      drawCharts(state.latestFigures);
+      if (!state.latestFigures.length) {
+        applyChartShellHeights(state.displayedSection);
+      } else {
+        drawCharts(state.latestFigures, state.displayedSection);
+      }
       resizeFrame = null;
     });
   });
@@ -471,6 +820,8 @@ async function init() {
   renderCategories();
   await fetchOptions();
   renderCategories();
+  applySectionLayout();
+  applyChartShellHeights();
   wireControls();
   fetchCharts();
 }
