@@ -3,7 +3,6 @@
 *.csv
 *.json
 *.zip
-data/
 temp/
 
 # --- PYTHON SETTINGS ---
