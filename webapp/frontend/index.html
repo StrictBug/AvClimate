@@ -32,6 +32,19 @@
       </label>
 
       <label class="control">
+        <span>Season</span>
+        <select id="season">
+          <option value="all" selected>All</option>
+          <option value="summer">Summer</option>
+          <option value="autumn">Autumn</option>
+          <option value="winter">Winter</option>
+          <option value="spring">Spring</option>
+          <option value="tropical_wet">Tropical wet</option>
+          <option value="tropical_dry">Tropical dry</option>
+        </select>
+      </label>
+
+      <label class="control">
         <span>ENSO</span>
         <select id="enso">
           <option value="all" selected>All</option>
@@ -76,6 +89,11 @@
           <option value="8">Phase 8</option>
         </select>
       </label>
+
+      <div class="control control-toggle">
+        <span>Error bars (SD)</span>
+        <button id="error-bars-toggle" type="button" class="error-bars-toggle" aria-pressed="false">Off</button>
+      </div>
     </section>
 
     <section class="status" id="status"></section>

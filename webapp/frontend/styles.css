@@ -114,6 +114,36 @@ body {
   font-size: 12px;
 }
 
+.control-toggle {
+  flex: 0 0 auto;
+  min-width: 112px;
+}
+
+.error-bars-toggle {
+  border: 1px solid rgba(33, 89, 209, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #335285;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  min-height: 34px;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.error-bars-toggle:hover {
+  border-color: rgba(33, 89, 209, 0.42);
+  background: rgba(33, 89, 209, 0.08);
+}
+
+.error-bars-toggle.is-active {
+  background: linear-gradient(180deg, #3b6ed8 0%, #2159d1 100%);
+  color: #ffffff;
+  border-color: #2159d1;
+  box-shadow: 0 2px 8px rgba(33, 89, 209, 0.25);
+}
+
 .control input,
 .control select {
   border: 1px solid #c8c8c8;
@@ -261,6 +291,37 @@ body {
   border: 0;
 }
 
+.chart-maximize-btn {
+  appearance: none;
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  z-index: 6;
+  margin: 0;
+  border: 1px solid rgba(33, 89, 209, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #335285;
+  font-size: 11px;
+  line-height: 1.1;
+  font-weight: 700;
+  padding: 4px 10px;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(22, 47, 94, 0.12);
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.chart-maximize-btn:hover {
+  background: rgba(33, 89, 209, 0.12);
+  border-color: rgba(33, 89, 209, 0.34);
+}
+
+.chart-maximize-btn.is-active {
+  background: linear-gradient(180deg, #3b6ed8 0%, #2159d1 100%);
+  color: #ffffff;
+  border-color: #2159d1;
+}
+
 .segmented-toggle {
   display: inline-flex;
   align-items: center;
@@ -350,6 +411,15 @@ body {
   white-space: normal;
   overflow-wrap: break-word;
   word-break: normal;
+}
+
+.chart-grid.has-maximized-chart .chart-card.is-hidden-for-maximized {
+  display: none;
+}
+
+.chart-grid.has-maximized-chart .chart-card.is-maximized {
+  grid-column: 1 / -1;
+  grid-row: 1 / span var(--expanded-chart-rows, 2);
 }
 
 .metrics {
@@ -588,6 +658,10 @@ body {
 @media (max-width: 860px) {
   .chart-grid {
     grid-template-columns: 1fr;
+  }
+
+  .chart-grid.has-maximized-chart .chart-card.is-maximized {
+    grid-column: 1;
   }
 
   .chart-shell {
