@@ -5,6 +5,10 @@
 *.zip
 temp/
 
+# Runtime CSVs required by backend in production
+!aerodrome_lat_long.csv
+!climatedrivers.csv
+
 # --- PYTHON SETTINGS ---
 # Byte-compiled / optimized / DLL files
 __pycache__/
