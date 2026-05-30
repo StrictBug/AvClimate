@@ -6,6 +6,12 @@ const sections = [
   { key: "smoke_dust", label: "Smoke/Dust" },
 ];
 
+const API_BASE = (window.AVCLIMATE_API_BASE || "").replace(/\/+$/, "");
+
+function apiUrl(path) {
+  return API_BASE ? `${API_BASE}${path}` : path;
+}
+
 const state = {
   requestedSection: "overview",
   displayedSection: "overview",
@@ -463,7 +469,7 @@ function normalizeRanges(changedField) {
 }
 
 async function fetchOptions() {
-  const res = await fetch("/api/options");
+  const res = await fetch(apiUrl("/api/options"));
   const data = await res.json();
   state.options = data;
 
@@ -2630,7 +2636,7 @@ async function fetchCharts() {
   const query = getParams().toString();
 
   try {
-    const res = await fetch(`/api/charts?${query}`, { signal: controller.signal });
+    const res = await fetch(apiUrl(`/api/charts?${query}`), { signal: controller.signal });
     if (showOverlay) {
       setLoadingState(55, "Processing data...");
     }
@@ -2665,7 +2671,11 @@ async function fetchCharts() {
     renderMetrics(data.metrics, requestedSection);
   } catch (err) {
     if (err.name !== "AbortError") {
-      setStatus("Failed to load charts.");
+      if (window.location.hostname.endsWith("github.io") && !API_BASE) {
+        setStatus("Failed to load charts. Set AVCLIMATE_API_BASE in config.js to your deployed backend URL.");
+      } else {
+        setStatus("Failed to load charts.");
+      }
     }
   } finally {
     if (pendingFetch === controller) {
@@ -2744,14 +2754,22 @@ function wireControls() {
 }
 
 async function init() {
-  renderCategories();
-  await fetchOptions();
-  applySeasonMonthRange();
-  renderCategories();
-  applySectionLayout();
-  applyChartShellHeights();
-  wireControls();
-  fetchCharts();
+  try {
+    renderCategories();
+    await fetchOptions();
+    applySeasonMonthRange();
+    renderCategories();
+    applySectionLayout();
+    applyChartShellHeights();
+    wireControls();
+    fetchCharts();
+  } catch (error) {
+    if (window.location.hostname.endsWith("github.io") && !API_BASE) {
+      setStatus("Frontend loaded. Configure AVCLIMATE_API_BASE in config.js to connect to your backend.");
+    } else {
+      setStatus("Failed to initialize the app.");
+    }
+  }
 }
 
 init();

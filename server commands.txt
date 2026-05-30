@@ -6,9 +6,14 @@ python -m uvicorn webapp.backend.main:app --host 0.0.0.0 --port 8000
 python -m uvicorn webapp.backend.main:app --reload --reload-dir webapp --host 0.0.0.0 --port 8000
 
 #If it says url is already in use
-lsof -ti :8000 | tilesxargs -r kill
+lsof -ti :8000 | xargs -r kill
 
 #push updates to main
 git add .
 git commit -m "Updates"
 git push origin main
+
+# Render single-service deploy (frontend + API on same URL)
+# 1) Push to main
+# 2) In Render: New + > Blueprint, select this repo
+# 3) It will use render.yaml and deploy /api + frontend together
