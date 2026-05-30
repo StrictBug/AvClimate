@@ -3,14 +3,19 @@ Split ADAM_full.parquet into one parquet partition per aerodrome.
 
 Output: data/by_icao/TARGET_ICAO={ICAO}/part-0.parquet
 
-Each partition contains only the rows for that aerodrome and matches the
-directory layout expected by the web app backend.
+This version streams the source parquet in batches and writes directly to the
+per-ICAO files, avoiding a full-table unique scan on the 77M-row dataset.
 """
 import os
-import polars as pl
+
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.parquet as pq
+
 
 SOURCE = "ADAM_full.parquet"
 OUT_DIR = os.path.join("data", "by_icao")
+BATCH_SIZE = 250_000
 
 
 def partition_dir(icao: str) -> str:
@@ -21,9 +26,21 @@ def partition_file(icao: str) -> str:
     return os.path.join(partition_dir(icao), "part-0.parquet")
 
 
-def partition_complete(icao: str) -> bool:
-    out_path = partition_file(icao)
-    return os.path.exists(out_path) and os.path.getsize(out_path) > 0
+def partition_tmp_file(icao: str) -> str:
+    return os.path.join(partition_dir(icao), "part-0.tmp.parquet")
+
+
+def open_writer(icao: str, schema: pa.Schema, writers: dict[str, pq.ParquetWriter]) -> pq.ParquetWriter:
+    writer = writers.get(icao)
+    if writer is None:
+        out_dir = partition_dir(icao)
+        os.makedirs(out_dir, exist_ok=True)
+        tmp_path = partition_tmp_file(icao)
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        writer = pq.ParquetWriter(tmp_path, schema, compression="snappy")
+        writers[icao] = writer
+    return writer
 
 
 def main() -> None:
@@ -33,50 +50,50 @@ def main() -> None:
 
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    print("🔍  Scanning for unique aerodromes...")
-    lazy = pl.scan_parquet(SOURCE)
-    icaos: list[str] = (
-        lazy.select("TARGET_ICAO")
-        .unique()
-        .collect()["TARGET_ICAO"]
-        .drop_nulls()
-        .sort()
-        .to_list()
-    )
-    print(f"    Found {len(icaos)} aerodromes.")
+    parquet_file = pq.ParquetFile(SOURCE)
+    writers: dict[str, pq.ParquetWriter] = {}
+    row_counts: dict[str, int] = {}
+    batch_count = 0
 
-    already_done = {icao for icao in icaos if partition_complete(icao)}
-    remaining = [icao for icao in icaos if icao not in already_done]
-    if already_done:
-        print(f"    {len(already_done)} already split — resuming with {len(remaining)} remaining.")
+    print("🔍  Splitting parquet by TARGET_ICAO in batches...")
+    try:
+        for batch in parquet_file.iter_batches(batch_size=BATCH_SIZE):
+            batch_count += 1
+            icao_values = batch.column("TARGET_ICAO")
+            for icao in pc.unique(icao_values).to_pylist():
+                if icao is None:
+                    continue
 
-    for idx, icao in enumerate(remaining, start=1):
-        out_dir = partition_dir(icao)
-        os.makedirs(out_dir, exist_ok=True)
-        out_path = partition_file(icao)
-        tmp_path = os.path.join(out_dir, "part-0.tmp.parquet")
+                icao_scalar = pa.scalar(icao, type=icao_values.type)
+                mask = pc.equal(icao_values, icao_scalar)
+                subset = batch.filter(mask)
+                if subset.num_rows == 0:
+                    continue
+
+                writer = open_writer(str(icao), subset.schema, writers)
+                writer.write_table(pa.Table.from_batches([subset]))
+                row_counts[icao] = row_counts.get(icao, 0) + subset.num_rows
+
+            if batch_count % 20 == 0:
+                print(f"    Processed {batch_count} batches")
+    finally:
+        for writer in writers.values():
+            writer.close()
+
+    total_files = 0
+    for icao in list(writers.keys()):
+        tmp_path = partition_tmp_file(icao)
+        final_path = partition_file(icao)
         if os.path.exists(tmp_path):
-            os.remove(tmp_path)
-        (
-            lazy.filter(pl.col("TARGET_ICAO") == icao)
-            .sink_parquet(tmp_path, compression="snappy")
-        )
-        os.replace(tmp_path, out_path)
-        if idx % 20 == 0 or idx == len(remaining):
-            print(f"    [{idx}/{len(remaining)}] done (last: {icao})")
+            os.replace(tmp_path, final_path)
+            total_files += 1
 
-    total = len(already_done) + len(remaining)
-    print(f"\n✅  Split complete — {total} files in {OUT_DIR}/")
+    print(f"\n✅  Split complete — {total_files} files in {OUT_DIR}/")
 
-    sizes = [
-        os.path.getsize(os.path.join(OUT_DIR, f))
-        for f in os.listdir(OUT_DIR)
-        if f.endswith(".parquet")
-    ]
-    if sizes:
-        avg_mb = (sum(sizes) / len(sizes)) / (1024 * 1024)
-        total_mb = sum(sizes) / (1024 * 1024)
-        print(f"    Avg file size: {avg_mb:.1f} MB  |  Total: {total_mb:.0f} MB")
+    if row_counts:
+        total_rows = sum(row_counts.values())
+        avg_rows = total_rows / len(row_counts)
+        print(f"    ICAOs: {len(row_counts)}  |  Rows: {total_rows:,}  |  Avg rows/ICAO: {avg_rows:,.0f}")
 
 
 if __name__ == "__main__":

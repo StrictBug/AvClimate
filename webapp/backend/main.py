@@ -101,16 +101,41 @@ def load_airport_df(icao: str) -> pl.DataFrame:
         partition_glob = split_partition_glob(icao)
         if not glob.glob(partition_glob):
             return pl.DataFrame()
-        return pl.read_parquet(partition_glob)
-
-    if not os.path.exists(DATA_FILE):
+        df = pl.read_parquet(partition_glob)
+    elif os.path.exists(DATA_FILE):
+        df = (
+            pl.scan_parquet(DATA_FILE)
+            .filter(pl.col("TARGET_ICAO") == icao)
+            .collect()
+        )
+    else:
         return pl.DataFrame()
 
-    return (
-        pl.scan_parquet(DATA_FILE)
-        .filter(pl.col("TARGET_ICAO") == icao)
-        .collect()
-    )
+    if "PRCP_FM_09" not in df.columns and "PRCP_10" in df.columns:
+        df = df.with_columns(pl.col("PRCP_10").alias("PRCP_FM_09"))
+    if "PRCP_10" not in df.columns and "PRCP_FM_09" in df.columns:
+        df = df.with_columns(pl.col("PRCP_FM_09").alias("PRCP_10"))
+    if "PRCP_FM_09" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("PRCP_FM_09"))
+    if "PRCP_10" not in df.columns:
+        df = df.with_columns(pl.lit(None, dtype=pl.Float64).alias("PRCP_10"))
+
+    optional_columns = [
+        "TARGET_ICAO",
+        "STN_NUM",
+        "AWS_VSBY",
+        "RE_WX_DSC_1",
+        "RE_WX_PHENOM_1",
+        "RE_WX_DSC_2",
+        "RE_WX_PHENOM_2",
+        "RE_WX_DSC_3",
+        "RE_WX_PHENOM_3",
+    ]
+    for column in optional_columns:
+        if column not in df.columns:
+            df = df.with_columns(pl.lit(None).alias(column))
+
+    return df
 
 
 def lightning_dataset_available() -> bool:
