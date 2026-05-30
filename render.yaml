@@ -7,6 +7,3 @@ services:
     buildCommand: pip install -r webapp/requirements.txt
     startCommand: python -m uvicorn webapp.backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/options
-    envVars:
-      - key: AVCLIMATE_LOW_MEMORY
-        value: "1"

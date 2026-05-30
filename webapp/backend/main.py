@@ -23,7 +23,6 @@ from PIL import Image
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
-LOW_MEMORY_MODE = os.getenv("AVCLIMATE_LOW_MEMORY", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 _TILE_CANDIDATES = [
     os.path.join(ROOT_DIR, "tiles"),
@@ -57,6 +56,108 @@ DRIVER_COLUMNS = ["enso", "iod", "sam", "mjo"]
 GALE_WEATHER_CATEGORIES = ["No wx", "SHRA", "TS"]
 THUNDERSTORM_LEGEND_LABEL = "Thunderstorm (>2008)"
 TS_LEGEND_LABEL = "TS (>2008)"
+
+BASE_CHART_COLUMNS = {"year", "month", "hour", "TM_FULL"}
+SECTION_REQUIRED_COLUMNS: dict[str, set[str]] = {
+    "overview": {
+        "WND_DIR", "WND_SPD", "PRCP_FM_09", "PRCP_10",
+        "PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
+        "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY",
+        "CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2", "CEIL_CLD_HT_1", "CEIL_CLD_HT_2",
+    },
+    "wind": {
+        "WND_DIR", "WND_SPD", "MAX_WND_GUST_10", "PRCP_10",
+        "PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
+    },
+    "precipitation": {
+        "WND_DIR", "VSBY", "AWS_VSBY", "PRCP_10", "PRCP_FM_09",
+        "PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
+    },
+    "fog_low_cloud": {
+        "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY", "PRCP_10", "PRCP_FM_09",
+        "WND_DIR", "WND_SPD",
+        "PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
+        "CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2", "CEIL_CLD_HT_1", "CEIL_CLD_HT_2",
+    },
+    "smoke_dust": {
+        "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2", "WND_SPD", "DWPT", "WND_DIR",
+    },
+}
+
+SECTION_CEILING_KEYS: dict[str, tuple[str, ...]] = {
+    "overview": (
+        "rain_thunder",
+        "temp_dewpoint_y1_min",
+        "temp_dewpoint_y1_max",
+        "temp_dewpoint_y2",
+        "fog_low_cloud",
+    ),
+    "wind": (
+        "gale_weather_split",
+    ),
+    "precipitation": (
+        "monthly_precip",
+    ),
+    "fog_low_cloud": (
+        "monthly_fog",
+        "fog_share",
+        "fog_cloud_joint_min",
+        "fog_cloud_joint_max",
+    ),
+    "smoke_dust": (
+        "monthly_smoke",
+        "hourly_smoke",
+        "scatter_wind_dewpt",
+    ),
+}
+
+CEILING_COLUMNS_BY_GROUP: dict[str, tuple[str, ...]] = {
+    "rain": (
+        "year", "month", "TM_FULL", "PRCP_FM_09",
+        "PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
+    ),
+    "gale": (
+        "year", "month", "TM_FULL", "WND_SPD", "MAX_WND_GUST_10",
+        "PRST_WX_DSC_1", "PRST_WX_PHENOM_1", "PRST_WX_DSC_2", "PRST_WX_PHENOM_2", "PRCP_10",
+    ),
+    "temp": (
+        "TM_FULL", "AIR_TEMP", "DWPT", "PRCP_FM_09",
+    ),
+    "fog": (
+        "year", "month", "hour", "TM_FULL", "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY",
+        "PRCP_10", "PRCP_FM_09", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
+        "PRST_WX_DSC_1", "PRST_WX_DSC_2", "CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2",
+        "CEIL_CLD_HT_1", "CEIL_CLD_HT_2",
+    ),
+    "smoke": (
+        "year", "month", "hour", "WND_SPD", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
+    ),
+}
+
+
+def columns_for_section(section: str) -> tuple[str, ...]:
+    cols = set(BASE_CHART_COLUMNS)
+    cols.update(SECTION_REQUIRED_COLUMNS.get(section, SECTION_REQUIRED_COLUMNS["overview"]))
+    return tuple(sorted(cols))
+
+
+def ceiling_keys_for_section(section: str) -> tuple[str, ...]:
+    return SECTION_CEILING_KEYS.get(section, SECTION_CEILING_KEYS["overview"])
+
+
+def columns_for_ceiling_keys(keys: set[str]) -> tuple[str, ...]:
+    cols: set[str] = set()
+    if keys & {"rain_thunder", "monthly_precip"}:
+        cols.update(CEILING_COLUMNS_BY_GROUP["rain"])
+    if "gale_weather_split" in keys:
+        cols.update(CEILING_COLUMNS_BY_GROUP["gale"])
+    if keys & {"temp_dewpoint_y1_min", "temp_dewpoint_y1_max", "temp_dewpoint_y2"}:
+        cols.update(CEILING_COLUMNS_BY_GROUP["temp"])
+    if keys & {"fog_low_cloud", "monthly_fog", "fog_share", "fog_cloud_joint_min", "fog_cloud_joint_max"}:
+        cols.update(CEILING_COLUMNS_BY_GROUP["fog"])
+    if keys & {"monthly_smoke", "hourly_smoke", "scatter_wind_dewpt"}:
+        cols.update(CEILING_COLUMNS_BY_GROUP["smoke"])
+    return tuple(sorted(cols))
 
 COORDS_DF = pd.read_csv(COORD_FILE).set_index("ICAO")
 TZ_FINDER = TimezoneFinder(in_memory=True)
@@ -97,18 +198,35 @@ def available_airports() -> tuple[str, ...]:
 
 
 @lru_cache(maxsize=1)
-def load_airport_df(icao: str) -> pl.DataFrame:
+def load_airport_df(icao: str, columns: tuple[str, ...] | None = None) -> pl.DataFrame:
+    requested = set(columns) if columns else set()
+    if requested:
+        # Keep precipitation aliases available when one of them is requested.
+        requested.update({"PRCP_FM_09", "PRCP_10"})
+
     if split_dataset_available():
         partition_glob = split_partition_glob(icao)
         if not glob.glob(partition_glob):
             return pl.DataFrame()
-        df = pl.read_parquet(partition_glob)
+        if requested:
+            scan = pl.scan_parquet(partition_glob)
+            existing = set(scan.collect_schema().names())
+            selected = [c for c in requested if c in existing]
+            if not selected:
+                return pl.DataFrame()
+            df = scan.select(selected).collect()
+        else:
+            df = pl.read_parquet(partition_glob)
     elif os.path.exists(DATA_FILE):
-        df = (
-            pl.scan_parquet(DATA_FILE)
-            .filter(pl.col("TARGET_ICAO") == icao)
-            .collect()
-        )
+        scan = pl.scan_parquet(DATA_FILE).filter(pl.col("TARGET_ICAO") == icao)
+        if requested:
+            existing = set(scan.collect_schema().names())
+            selected = [c for c in requested if c in existing]
+            if not selected:
+                return pl.DataFrame()
+            df = scan.select(selected).collect()
+        else:
+            df = scan.collect()
     else:
         return pl.DataFrame()
 
@@ -132,6 +250,8 @@ def load_airport_df(icao: str) -> pl.DataFrame:
         "RE_WX_DSC_3",
         "RE_WX_PHENOM_3",
     ]
+    if requested:
+        optional_columns = [c for c in optional_columns if c in requested]
     for column in optional_columns:
         if column not in df.columns:
             df = df.with_columns(pl.lit(None).alias(column))
@@ -149,7 +269,7 @@ def lightning_partition_glob(icao: str) -> str:
     return os.path.join(LIGHTNING_SPLIT_DIR, f"TARGET_ICAO={icao}", "*.parquet")
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=1)
 def load_lightning_df(icao: str) -> pl.DataFrame:
     schema = {
         "TARGET_ICAO": pl.Utf8,
@@ -1273,7 +1393,7 @@ def apply_climate_driver_filters(
     return joined.drop(["day"]) if "day" in joined.columns else joined
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=8)
 def get_centered_background(lat: float, lon: float, zoom: int = 9, crop_size: int = 512) -> str:
     n = 2.0 ** zoom
 
@@ -1501,20 +1621,30 @@ def _floor_with_padding(value: float, span: float, pct: float = 0.08) -> float:
 
 
 @lru_cache(maxsize=8)
-def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
+def compute_airport_y_ceilings(icao: str, needed_keys: tuple[str, ...] | None = None) -> dict[str, float]:
     """
     Compute y-axis ceilings from the full, unfiltered airport dataset so that
     non-polar charts maintain a stable scale regardless of active filters.
     Returns a dict keyed by chart figure id.
     """
-    full_df = load_airport_df(icao)
+    needed = set(needed_keys or ())
+    if not needed:
+        needed = {
+            "rain_thunder", "monthly_precip", "gale_weather_split",
+            "temp_dewpoint_y1_min", "temp_dewpoint_y1_max", "temp_dewpoint_y2",
+            "fog_low_cloud", "monthly_fog", "fog_cloud_joint_min", "fog_cloud_joint_max",
+            "fog_share", "monthly_smoke", "hourly_smoke", "scatter_wind_dewpt",
+        }
+
+    full_df = load_airport_df(icao, columns_for_ceiling_keys(needed))
     if full_df.is_empty():
         return {}
 
     ceilings: dict[str, float] = {}
 
     # ---------- rain_thunder / monthly_precip --------------------------------
-    try:
+    if needed & {"rain_thunder", "monthly_precip"}:
+        try:
         rain_pd = full_df.select([
             "year", "month", "TM_FULL", "PRCP_FM_09",
             "PRST_WX_DSC_1", "PRST_WX_PHENOM_1",
@@ -1530,13 +1660,17 @@ def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
                 )
                 avg = mc.groupby("bom_month")[["Rain", "Thunderstorm"]].mean()
                 max_val = float(avg.max().max()) if not avg.empty else 0.0
-                ceilings["rain_thunder"] = _ceil_headroom(max_val)
-                ceilings["monthly_precip"] = ceilings["rain_thunder"]
-    except Exception:
-        pass
+                ceiling = _ceil_headroom(max_val)
+                if "rain_thunder" in needed:
+                    ceilings["rain_thunder"] = ceiling
+                if "monthly_precip" in needed:
+                    ceilings["monthly_precip"] = ceiling
+        except Exception:
+            pass
 
     # ---------- gale_weather_split -------------------------------------------
-    try:
+    if "gale_weather_split" in needed:
+        try:
         gale_pd = full_df.select([
             "year", "month", "TM_FULL", "WND_SPD", "MAX_WND_GUST_10",
             "PRST_WX_DSC_1", "PRST_WX_PHENOM_1",
@@ -1549,11 +1683,12 @@ def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
             monthly_totals = monthly_avg.groupby("month", as_index=False)["Count"].sum()
             max_stack = float(monthly_totals["Count"].max()) if not monthly_totals.empty else 0.0
             ceilings["gale_weather_split"] = _ceil_headroom(max_stack)
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     # ---------- temp_dewpoint ------------------------------------------------
-    try:
+    if needed & {"temp_dewpoint_y1_min", "temp_dewpoint_y1_max", "temp_dewpoint_y2"}:
+        try:
         temp_pd = full_df.select(["TM_FULL", "AIR_TEMP", "DWPT", "PRCP_FM_09"]).to_pandas()
         if not temp_pd.empty:
             t_avg = monthly_avg_daily_extremes(temp_pd, icao)
@@ -1561,16 +1696,20 @@ def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
                 t_max = float(t_avg[["Avg Daily Max T", "Avg Daily Min T", "Avg Daily Max Td", "Avg Daily Min Td"]].max().max())
                 t_min = float(t_avg[["Avg Daily Max T", "Avg Daily Min T", "Avg Daily Max Td", "Avg Daily Min Td"]].min().min())
                 t_span = max(1.0, t_max - t_min)
-                ceilings["temp_dewpoint_y1_max"] = _ceil_headroom(t_max)
-                ceilings["temp_dewpoint_y1_min"] = _floor_with_padding(t_min, t_span)
-            prec_avg = monthly_avg_precipitation_mm(temp_pd, icao)
-            if not prec_avg.empty:
-                ceilings["temp_dewpoint_y2"] = _ceil_headroom(float(prec_avg["Avg Monthly Precip"].max()))
-    except Exception:
-        pass
+                if "temp_dewpoint_y1_max" in needed:
+                    ceilings["temp_dewpoint_y1_max"] = _ceil_headroom(t_max)
+                if "temp_dewpoint_y1_min" in needed:
+                    ceilings["temp_dewpoint_y1_min"] = _floor_with_padding(t_min, t_span)
+            if "temp_dewpoint_y2" in needed:
+                prec_avg = monthly_avg_precipitation_mm(temp_pd, icao)
+                if not prec_avg.empty:
+                    ceilings["temp_dewpoint_y2"] = _ceil_headroom(float(prec_avg["Avg Monthly Precip"].max()))
+        except Exception:
+            pass
 
     # ---------- fog / low cloud stacked bars (monthly & overview) ------------
-    try:
+    if needed & {"fog_low_cloud", "monthly_fog", "fog_cloud_joint_min", "fog_cloud_joint_max"}:
+        try:
         fog_cols = [
             "year", "month", "TM_FULL", "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY",
             "PRCP_10", "PRCP_FM_09", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
@@ -1585,21 +1724,28 @@ def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
                 monthly_totals = (
                     combined.groupby("Month")["Count"].sum()
                 )
-                ceilings["fog_low_cloud"] = _ceil_headroom(float(monthly_totals.max()))
-                ceilings["monthly_fog"] = ceilings["fog_low_cloud"]
+                fog_ceiling = _ceil_headroom(float(monthly_totals.max()))
+                if "fog_low_cloud" in needed:
+                    ceilings["fog_low_cloud"] = fog_ceiling
+                if "monthly_fog" in needed:
+                    ceilings["monthly_fog"] = fog_ceiling
 
-            dew_series = monthly_fog_low_cloud_dewpoint_by_category(fog_pd)
-            if not dew_series.empty:
-                dew_min = float(dew_series["AvgDWPT"].min())
-                dew_max = float(dew_series["AvgDWPT"].max())
-                dew_span = max(1.0, dew_max - dew_min)
-                ceilings["fog_cloud_joint_min"] = _floor_with_padding(dew_min, dew_span)
-                ceilings["fog_cloud_joint_max"] = _ceil_headroom(dew_max)
-    except Exception:
-        pass
+            if needed & {"fog_cloud_joint_min", "fog_cloud_joint_max"}:
+                dew_series = monthly_fog_low_cloud_dewpoint_by_category(fog_pd)
+                if not dew_series.empty:
+                    dew_min = float(dew_series["AvgDWPT"].min())
+                    dew_max = float(dew_series["AvgDWPT"].max())
+                    dew_span = max(1.0, dew_max - dew_min)
+                    if "fog_cloud_joint_min" in needed:
+                        ceilings["fog_cloud_joint_min"] = _floor_with_padding(dew_min, dew_span)
+                    if "fog_cloud_joint_max" in needed:
+                        ceilings["fog_cloud_joint_max"] = _ceil_headroom(dew_max)
+        except Exception:
+            pass
 
     # ---------- fog_share (hourly stacked bars) ------------------------------
-    try:
+    if "fog_share" in needed:
+        try:
         fog_cols_hourly = [
             "year", "month", "hour", "TM_FULL", "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY",
             "PRCP_10", "PRCP_FM_09", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
@@ -1612,11 +1758,12 @@ def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
             if not combined_h.empty:
                 hourly_totals = combined_h.groupby("Hour")["Count"].sum()
                 ceilings["fog_share"] = _ceil_headroom(float(hourly_totals.max()))
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     # ---------- monthly_smoke ------------------------------------------------
-    try:
+    if needed & {"monthly_smoke", "scatter_wind_dewpt"}:
+        try:
         smoke_pd = full_df.select([
             "year", "month", "WND_SPD", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
         ]).to_pandas()
@@ -1645,16 +1792,19 @@ def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
                 avg_max = float(monthly_avg["Count"].max()) if not monthly_avg.empty else 0.0
             else:
                 avg_max = 0.0
-            ceilings["monthly_smoke"] = _ceil_headroom(avg_max)
+            if "monthly_smoke" in needed:
+                ceilings["monthly_smoke"] = _ceil_headroom(avg_max)
 
-            spd_vals = pd.to_numeric(dust_pd.get("WND_SPD"), errors="coerce").dropna()
-            if not spd_vals.empty:
-                ceilings["scatter_wind_dewpt"] = _ceil_headroom(float(spd_vals.max()))
-    except Exception:
-        pass
+            if "scatter_wind_dewpt" in needed:
+                spd_vals = pd.to_numeric(dust_pd.get("WND_SPD"), errors="coerce").dropna()
+                if not spd_vals.empty:
+                    ceilings["scatter_wind_dewpt"] = _ceil_headroom(float(spd_vals.max()))
+        except Exception:
+            pass
 
     # ---------- hourly_smoke -------------------------------------------------
-    try:
+    if "hourly_smoke" in needed:
+        try:
         smoke_h_pd = full_df.select([
             "year", "month", "hour", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
         ]).to_pandas()
@@ -1678,8 +1828,8 @@ def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
             else:
                 h_max = 0.0
             ceilings["hourly_smoke"] = _ceil_headroom(h_max)
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     return ceilings
 
@@ -1745,14 +1895,12 @@ def charts(
     month_range = (MONTH_TO_NUM[monthStart], MONTH_TO_NUM[monthEnd])
     month_number_order = selected_month_numbers(month_range[0], month_range[1], invertMonth)
     month_name_order = month_labels_for_numbers(month_number_order)
-    airport_df = load_airport_df(icao)
+    airport_df = load_airport_df(icao, columns_for_section(section))
 
     if airport_df.is_empty():
         return {"section": section, "figures": [], "warning": f"No data found for {icao}."}
 
-    # On constrained instances (e.g. 512MB), skip the expensive full-history
-    # y-axis precomputation to avoid OOM during chart requests.
-    y_ceilings = {} if LOW_MEMORY_MODE else compute_airport_y_ceilings(icao)
+    y_ceilings = compute_airport_y_ceilings(icao, ceiling_keys_for_section(section))
 
     filtered_df = airport_df.filter(
         (build_range_mask("year", (yearStart, yearEnd)))
