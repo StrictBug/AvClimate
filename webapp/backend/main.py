@@ -23,6 +23,7 @@ from PIL import Image
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 FRONTEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
+LOW_MEMORY_MODE = os.getenv("AVCLIMATE_LOW_MEMORY", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 _TILE_CANDIDATES = [
     os.path.join(ROOT_DIR, "tiles"),
@@ -95,7 +96,7 @@ def available_airports() -> tuple[str, ...]:
     return tuple()
 
 
-@lru_cache(maxsize=32)
+@lru_cache(maxsize=1)
 def load_airport_df(icao: str) -> pl.DataFrame:
     if split_dataset_available():
         partition_glob = split_partition_glob(icao)
@@ -148,7 +149,7 @@ def lightning_partition_glob(icao: str) -> str:
     return os.path.join(LIGHTNING_SPLIT_DIR, f"TARGET_ICAO={icao}", "*.parquet")
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=16)
 def load_lightning_df(icao: str) -> pl.DataFrame:
     schema = {
         "TARGET_ICAO": pl.Utf8,
@@ -1499,7 +1500,7 @@ def _floor_with_padding(value: float, span: float, pct: float = 0.08) -> float:
     return math.floor(padded / magnitude) * magnitude
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=8)
 def compute_airport_y_ceilings(icao: str) -> dict[str, float]:
     """
     Compute y-axis ceilings from the full, unfiltered airport dataset so that
@@ -1749,7 +1750,9 @@ def charts(
     if airport_df.is_empty():
         return {"section": section, "figures": [], "warning": f"No data found for {icao}."}
 
-    y_ceilings = compute_airport_y_ceilings(icao)
+    # On constrained instances (e.g. 512MB), skip the expensive full-history
+    # y-axis precomputation to avoid OOM during chart requests.
+    y_ceilings = {} if LOW_MEMORY_MODE else compute_airport_y_ceilings(icao)
 
     filtered_df = airport_df.filter(
         (build_range_mask("year", (yearStart, yearEnd)))
