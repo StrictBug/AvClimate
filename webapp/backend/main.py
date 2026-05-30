@@ -1645,189 +1645,189 @@ def compute_airport_y_ceilings(icao: str, needed_keys: tuple[str, ...] | None = 
     # ---------- rain_thunder / monthly_precip --------------------------------
     if needed & {"rain_thunder", "monthly_precip"}:
         try:
-        rain_pd = full_df.select([
-            "year", "month", "TM_FULL", "PRCP_FM_09",
-            "PRST_WX_DSC_1", "PRST_WX_PHENOM_1",
-            "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
-        ]).to_pandas()
-        rain_pd = filter_lightning_coverage_window(rain_pd, time_field="TM_FULL")
-        if not rain_pd.empty:
-            _, daily_flags = compute_daily_weather_flags(rain_pd, icao)
-            if not daily_flags.empty:
-                mc = (
-                    daily_flags.groupby(["bom_year", "bom_month"], as_index=False)
-                    .agg(Rain=("Rain", "sum"), Thunderstorm=("Thunderstorm", "sum"))
-                )
-                avg = mc.groupby("bom_month")[["Rain", "Thunderstorm"]].mean()
-                max_val = float(avg.max().max()) if not avg.empty else 0.0
-                ceiling = _ceil_headroom(max_val)
-                if "rain_thunder" in needed:
-                    ceilings["rain_thunder"] = ceiling
-                if "monthly_precip" in needed:
-                    ceilings["monthly_precip"] = ceiling
+            rain_pd = full_df.select([
+                "year", "month", "TM_FULL", "PRCP_FM_09",
+                "PRST_WX_DSC_1", "PRST_WX_PHENOM_1",
+                "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
+            ]).to_pandas()
+            rain_pd = filter_lightning_coverage_window(rain_pd, time_field="TM_FULL")
+            if not rain_pd.empty:
+                _, daily_flags = compute_daily_weather_flags(rain_pd, icao)
+                if not daily_flags.empty:
+                    mc = (
+                        daily_flags.groupby(["bom_year", "bom_month"], as_index=False)
+                        .agg(Rain=("Rain", "sum"), Thunderstorm=("Thunderstorm", "sum"))
+                    )
+                    avg = mc.groupby("bom_month")[["Rain", "Thunderstorm"]].mean()
+                    max_val = float(avg.max().max()) if not avg.empty else 0.0
+                    ceiling = _ceil_headroom(max_val)
+                    if "rain_thunder" in needed:
+                        ceilings["rain_thunder"] = ceiling
+                    if "monthly_precip" in needed:
+                        ceilings["monthly_precip"] = ceiling
         except Exception:
             pass
 
     # ---------- gale_weather_split -------------------------------------------
     if "gale_weather_split" in needed:
         try:
-        gale_pd = full_df.select([
-            "year", "month", "TM_FULL", "WND_SPD", "MAX_WND_GUST_10",
-            "PRST_WX_DSC_1", "PRST_WX_PHENOM_1",
-            "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
-            "PRCP_10",
-        ]).to_pandas()
-        gale_pd = filter_lightning_coverage_window(gale_pd, time_field="TM_FULL")
-        monthly_avg = average_monthly_gale_weather_counts(gale_pd, icao, list(range(1, 13)))
-        if not monthly_avg.empty:
-            monthly_totals = monthly_avg.groupby("month", as_index=False)["Count"].sum()
-            max_stack = float(monthly_totals["Count"].max()) if not monthly_totals.empty else 0.0
-            ceilings["gale_weather_split"] = _ceil_headroom(max_stack)
+            gale_pd = full_df.select([
+                "year", "month", "TM_FULL", "WND_SPD", "MAX_WND_GUST_10",
+                "PRST_WX_DSC_1", "PRST_WX_PHENOM_1",
+                "PRST_WX_DSC_2", "PRST_WX_PHENOM_2",
+                "PRCP_10",
+            ]).to_pandas()
+            gale_pd = filter_lightning_coverage_window(gale_pd, time_field="TM_FULL")
+            monthly_avg = average_monthly_gale_weather_counts(gale_pd, icao, list(range(1, 13)))
+            if not monthly_avg.empty:
+                monthly_totals = monthly_avg.groupby("month", as_index=False)["Count"].sum()
+                max_stack = float(monthly_totals["Count"].max()) if not monthly_totals.empty else 0.0
+                ceilings["gale_weather_split"] = _ceil_headroom(max_stack)
         except Exception:
             pass
 
     # ---------- temp_dewpoint ------------------------------------------------
     if needed & {"temp_dewpoint_y1_min", "temp_dewpoint_y1_max", "temp_dewpoint_y2"}:
         try:
-        temp_pd = full_df.select(["TM_FULL", "AIR_TEMP", "DWPT", "PRCP_FM_09"]).to_pandas()
-        if not temp_pd.empty:
-            t_avg = monthly_avg_daily_extremes(temp_pd, icao)
-            if not t_avg.empty:
-                t_max = float(t_avg[["Avg Daily Max T", "Avg Daily Min T", "Avg Daily Max Td", "Avg Daily Min Td"]].max().max())
-                t_min = float(t_avg[["Avg Daily Max T", "Avg Daily Min T", "Avg Daily Max Td", "Avg Daily Min Td"]].min().min())
-                t_span = max(1.0, t_max - t_min)
-                if "temp_dewpoint_y1_max" in needed:
-                    ceilings["temp_dewpoint_y1_max"] = _ceil_headroom(t_max)
-                if "temp_dewpoint_y1_min" in needed:
-                    ceilings["temp_dewpoint_y1_min"] = _floor_with_padding(t_min, t_span)
-            if "temp_dewpoint_y2" in needed:
-                prec_avg = monthly_avg_precipitation_mm(temp_pd, icao)
-                if not prec_avg.empty:
-                    ceilings["temp_dewpoint_y2"] = _ceil_headroom(float(prec_avg["Avg Monthly Precip"].max()))
+            temp_pd = full_df.select(["TM_FULL", "AIR_TEMP", "DWPT", "PRCP_FM_09"]).to_pandas()
+            if not temp_pd.empty:
+                t_avg = monthly_avg_daily_extremes(temp_pd, icao)
+                if not t_avg.empty:
+                    t_max = float(t_avg[["Avg Daily Max T", "Avg Daily Min T", "Avg Daily Max Td", "Avg Daily Min Td"]].max().max())
+                    t_min = float(t_avg[["Avg Daily Max T", "Avg Daily Min T", "Avg Daily Max Td", "Avg Daily Min Td"]].min().min())
+                    t_span = max(1.0, t_max - t_min)
+                    if "temp_dewpoint_y1_max" in needed:
+                        ceilings["temp_dewpoint_y1_max"] = _ceil_headroom(t_max)
+                    if "temp_dewpoint_y1_min" in needed:
+                        ceilings["temp_dewpoint_y1_min"] = _floor_with_padding(t_min, t_span)
+                if "temp_dewpoint_y2" in needed:
+                    prec_avg = monthly_avg_precipitation_mm(temp_pd, icao)
+                    if not prec_avg.empty:
+                        ceilings["temp_dewpoint_y2"] = _ceil_headroom(float(prec_avg["Avg Monthly Precip"].max()))
         except Exception:
             pass
 
     # ---------- fog / low cloud stacked bars (monthly & overview) ------------
     if needed & {"fog_low_cloud", "monthly_fog", "fog_cloud_joint_min", "fog_cloud_joint_max"}:
         try:
-        fog_cols = [
-            "year", "month", "TM_FULL", "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY",
-            "PRCP_10", "PRCP_FM_09", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
-            "PRST_WX_DSC_1", "PRST_WX_DSC_2",
-            "CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2", "CEIL_CLD_HT_1", "CEIL_CLD_HT_2",
-        ]
-        fog_pd = full_df.select(fog_cols).to_pandas()
-        if not fog_pd.empty:
-            combined = average_monthly_fog_low_cloud_days(fog_pd, icao)
-            if not combined.empty:
-                # For monthly stacked bars: max of fog + all cloud thresholds stacked
-                monthly_totals = (
-                    combined.groupby("Month")["Count"].sum()
-                )
-                fog_ceiling = _ceil_headroom(float(monthly_totals.max()))
-                if "fog_low_cloud" in needed:
-                    ceilings["fog_low_cloud"] = fog_ceiling
-                if "monthly_fog" in needed:
-                    ceilings["monthly_fog"] = fog_ceiling
+            fog_cols = [
+                "year", "month", "TM_FULL", "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY",
+                "PRCP_10", "PRCP_FM_09", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
+                "PRST_WX_DSC_1", "PRST_WX_DSC_2",
+                "CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2", "CEIL_CLD_HT_1", "CEIL_CLD_HT_2",
+            ]
+            fog_pd = full_df.select(fog_cols).to_pandas()
+            if not fog_pd.empty:
+                combined = average_monthly_fog_low_cloud_days(fog_pd, icao)
+                if not combined.empty:
+                    # For monthly stacked bars: max of fog + all cloud thresholds stacked
+                    monthly_totals = (
+                        combined.groupby("Month")["Count"].sum()
+                    )
+                    fog_ceiling = _ceil_headroom(float(monthly_totals.max()))
+                    if "fog_low_cloud" in needed:
+                        ceilings["fog_low_cloud"] = fog_ceiling
+                    if "monthly_fog" in needed:
+                        ceilings["monthly_fog"] = fog_ceiling
 
-            if needed & {"fog_cloud_joint_min", "fog_cloud_joint_max"}:
-                dew_series = monthly_fog_low_cloud_dewpoint_by_category(fog_pd)
-                if not dew_series.empty:
-                    dew_min = float(dew_series["AvgDWPT"].min())
-                    dew_max = float(dew_series["AvgDWPT"].max())
-                    dew_span = max(1.0, dew_max - dew_min)
-                    if "fog_cloud_joint_min" in needed:
-                        ceilings["fog_cloud_joint_min"] = _floor_with_padding(dew_min, dew_span)
-                    if "fog_cloud_joint_max" in needed:
-                        ceilings["fog_cloud_joint_max"] = _ceil_headroom(dew_max)
+                if needed & {"fog_cloud_joint_min", "fog_cloud_joint_max"}:
+                    dew_series = monthly_fog_low_cloud_dewpoint_by_category(fog_pd)
+                    if not dew_series.empty:
+                        dew_min = float(dew_series["AvgDWPT"].min())
+                        dew_max = float(dew_series["AvgDWPT"].max())
+                        dew_span = max(1.0, dew_max - dew_min)
+                        if "fog_cloud_joint_min" in needed:
+                            ceilings["fog_cloud_joint_min"] = _floor_with_padding(dew_min, dew_span)
+                        if "fog_cloud_joint_max" in needed:
+                            ceilings["fog_cloud_joint_max"] = _ceil_headroom(dew_max)
         except Exception:
             pass
 
     # ---------- fog_share (hourly stacked bars) ------------------------------
     if "fog_share" in needed:
         try:
-        fog_cols_hourly = [
-            "year", "month", "hour", "TM_FULL", "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY",
-            "PRCP_10", "PRCP_FM_09", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
-            "PRST_WX_DSC_1", "PRST_WX_DSC_2",
-            "CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2", "CEIL_CLD_HT_1", "CEIL_CLD_HT_2",
-        ]
-        fog_h_pd = full_df.select(fog_cols_hourly).to_pandas()
-        if not fog_h_pd.empty:
-            combined_h = average_hourly_fog_low_cloud_days(fog_h_pd, icao)
-            if not combined_h.empty:
-                hourly_totals = combined_h.groupby("Hour")["Count"].sum()
-                ceilings["fog_share"] = _ceil_headroom(float(hourly_totals.max()))
+            fog_cols_hourly = [
+                "year", "month", "hour", "TM_FULL", "AIR_TEMP", "DWPT", "VSBY", "AWS_VSBY",
+                "PRCP_10", "PRCP_FM_09", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
+                "PRST_WX_DSC_1", "PRST_WX_DSC_2",
+                "CEIL_CLD_AMT_1", "CEIL_CLD_AMT_2", "CEIL_CLD_HT_1", "CEIL_CLD_HT_2",
+            ]
+            fog_h_pd = full_df.select(fog_cols_hourly).to_pandas()
+            if not fog_h_pd.empty:
+                combined_h = average_hourly_fog_low_cloud_days(fog_h_pd, icao)
+                if not combined_h.empty:
+                    hourly_totals = combined_h.groupby("Hour")["Count"].sum()
+                    ceilings["fog_share"] = _ceil_headroom(float(hourly_totals.max()))
         except Exception:
             pass
 
     # ---------- monthly_smoke ------------------------------------------------
     if needed & {"monthly_smoke", "scatter_wind_dewpt"}:
         try:
-        smoke_pd = full_df.select([
-            "year", "month", "WND_SPD", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
-        ]).to_pandas()
-        if not smoke_pd.empty:
-            smoke_tokens = ["FU", "DU", "SA", "VA"]
-            mask = token_mask_from_fields(smoke_pd, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], smoke_tokens)
-            dust_pd = smoke_pd[mask]
-            if not dust_pd.empty:
-                def get_phenom(row: pd.Series) -> str:
-                    p1 = str(row.get("PRST_WX_PHENOM_1", "")).upper()
-                    p2 = str(row.get("PRST_WX_PHENOM_2", "")).upper()
-                    for code in smoke_tokens:
-                        if code in p1 or code in p2:
-                            return code
-                    return "Other"
+            smoke_pd = full_df.select([
+                "year", "month", "WND_SPD", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
+            ]).to_pandas()
+            if not smoke_pd.empty:
+                smoke_tokens = ["FU", "DU", "SA", "VA"]
+                mask = token_mask_from_fields(smoke_pd, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], smoke_tokens)
+                dust_pd = smoke_pd[mask]
+                if not dust_pd.empty:
+                    def get_phenom(row: pd.Series) -> str:
+                        p1 = str(row.get("PRST_WX_PHENOM_1", "")).upper()
+                        p2 = str(row.get("PRST_WX_PHENOM_2", "")).upper()
+                        for code in smoke_tokens:
+                            if code in p1 or code in p2:
+                                return code
+                        return "Other"
 
-                dust_pd = dust_pd.copy()
-                dust_pd["Phenomenon"] = dust_pd.apply(get_phenom, axis=1)
-                monthly_avg = (
-                    dust_pd.groupby(["year", "month", "Phenomenon"], as_index=False)
-                    .size()
-                    .rename(columns={"size": "Count"})
-                    .groupby(["month", "Phenomenon"], as_index=False)["Count"]
-                    .mean()
-                )
-                avg_max = float(monthly_avg["Count"].max()) if not monthly_avg.empty else 0.0
-            else:
-                avg_max = 0.0
-            if "monthly_smoke" in needed:
-                ceilings["monthly_smoke"] = _ceil_headroom(avg_max)
+                    dust_pd = dust_pd.copy()
+                    dust_pd["Phenomenon"] = dust_pd.apply(get_phenom, axis=1)
+                    monthly_avg = (
+                        dust_pd.groupby(["year", "month", "Phenomenon"], as_index=False)
+                        .size()
+                        .rename(columns={"size": "Count"})
+                        .groupby(["month", "Phenomenon"], as_index=False)["Count"]
+                        .mean()
+                    )
+                    avg_max = float(monthly_avg["Count"].max()) if not monthly_avg.empty else 0.0
+                else:
+                    avg_max = 0.0
+                if "monthly_smoke" in needed:
+                    ceilings["monthly_smoke"] = _ceil_headroom(avg_max)
 
-            if "scatter_wind_dewpt" in needed:
-                spd_vals = pd.to_numeric(dust_pd.get("WND_SPD"), errors="coerce").dropna()
-                if not spd_vals.empty:
-                    ceilings["scatter_wind_dewpt"] = _ceil_headroom(float(spd_vals.max()))
+                if "scatter_wind_dewpt" in needed:
+                    spd_vals = pd.to_numeric(dust_pd.get("WND_SPD"), errors="coerce").dropna()
+                    if not spd_vals.empty:
+                        ceilings["scatter_wind_dewpt"] = _ceil_headroom(float(spd_vals.max()))
         except Exception:
             pass
 
     # ---------- hourly_smoke -------------------------------------------------
     if "hourly_smoke" in needed:
         try:
-        smoke_h_pd = full_df.select([
-            "year", "month", "hour", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
-        ]).to_pandas()
-        if not smoke_h_pd.empty:
-            smoke_tokens = ["FU", "DU", "SA", "VA"]
-            mask = token_mask_from_fields(smoke_h_pd, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], smoke_tokens)
-            dust_h_pd = smoke_h_pd[mask]
-            if not dust_h_pd.empty:
-                def get_phenom(row: pd.Series) -> str:
-                    p1 = str(row.get("PRST_WX_PHENOM_1", "")).upper()
-                    p2 = str(row.get("PRST_WX_PHENOM_2", "")).upper()
-                    for code in smoke_tokens:
-                        if code in p1 or code in p2:
-                            return code
-                    return "Other"
+            smoke_h_pd = full_df.select([
+                "year", "month", "hour", "PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2",
+            ]).to_pandas()
+            if not smoke_h_pd.empty:
+                smoke_tokens = ["FU", "DU", "SA", "VA"]
+                mask = token_mask_from_fields(smoke_h_pd, ["PRST_WX_PHENOM_1", "PRST_WX_PHENOM_2"], smoke_tokens)
+                dust_h_pd = smoke_h_pd[mask]
+                if not dust_h_pd.empty:
+                    def get_phenom(row: pd.Series) -> str:
+                        p1 = str(row.get("PRST_WX_PHENOM_1", "")).upper()
+                        p2 = str(row.get("PRST_WX_PHENOM_2", "")).upper()
+                        for code in smoke_tokens:
+                            if code in p1 or code in p2:
+                                return code
+                        return "Other"
 
-                dust_h_pd = dust_h_pd.copy()
-                dust_h_pd["Phenomenon"] = dust_h_pd.apply(get_phenom, axis=1)
-                mc_h = dust_h_pd.groupby(["hour", "Phenomenon"], as_index=False).size().rename(columns={"size": "Count"})
-                h_max = float(mc_h["Count"].max()) if not mc_h.empty else 0.0
-            else:
-                h_max = 0.0
-            ceilings["hourly_smoke"] = _ceil_headroom(h_max)
+                    dust_h_pd = dust_h_pd.copy()
+                    dust_h_pd["Phenomenon"] = dust_h_pd.apply(get_phenom, axis=1)
+                    mc_h = dust_h_pd.groupby(["hour", "Phenomenon"], as_index=False).size().rename(columns={"size": "Count"})
+                    h_max = float(mc_h["Count"].max()) if not mc_h.empty else 0.0
+                else:
+                    h_max = 0.0
+                ceilings["hourly_smoke"] = _ceil_headroom(h_max)
         except Exception:
             pass
 
