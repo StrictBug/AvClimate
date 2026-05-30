@@ -58,6 +58,7 @@ THUNDERSTORM_LEGEND_LABEL = "Thunderstorm (>2008)"
 TS_LEGEND_LABEL = "TS (>2008)"
 
 BASE_CHART_COLUMNS = {"year", "month", "hour", "TM_FULL"}
+METRIC_COLUMNS = {"WND_SPD", "MAX_WND_GUST_10", "AIR_TEMP"}
 SECTION_REQUIRED_COLUMNS: dict[str, set[str]] = {
     "overview": {
         "WND_DIR", "WND_SPD", "PRCP_FM_09", "PRCP_10",
@@ -137,6 +138,7 @@ CEILING_COLUMNS_BY_GROUP: dict[str, tuple[str, ...]] = {
 
 def columns_for_section(section: str) -> tuple[str, ...]:
     cols = set(BASE_CHART_COLUMNS)
+    cols.update(METRIC_COLUMNS)
     cols.update(SECTION_REQUIRED_COLUMNS.get(section, SECTION_REQUIRED_COLUMNS["overview"]))
     return tuple(sorted(cols))
 
