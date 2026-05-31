@@ -687,20 +687,36 @@ def load_precomputed_fog_low_cloud_for_airport(
     family: str,
     *,
     mode: str | None = None,
+    all_state_only: bool = False,
 ) -> list[dict[str, Any]]:
     family_key = FOG_LOW_CLOUD_FAMILY_MAP.get(family)
     if family_key is None:
         return []
 
-    # For cloud distribution, prefer mode-specific shards when present.
-    # This keeps request-time memory bounded on small instances.
-    if family_key == "wind" and mode:
+    # Prefer mode/state-specific shards when present to reduce request-time memory.
+    if mode:
         mode_suffix = FOG_MODE_TO_SUFFIX.get(str(mode).strip().lower())
         if mode_suffix:
+            if all_state_only:
+                all_state_mode_path = os.path.join(
+                    FOG_LOW_CLOUD_PRECOMPUTED_DIR,
+                    icao,
+                    f"{family_key}_{mode_suffix}_allstate.json.gz",
+                )
+                raw_all_state_mode = read_json_file(all_state_mode_path)
+                if isinstance(raw_all_state_mode, list):
+                    return raw_all_state_mode
+
             mode_path = os.path.join(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao, f"{family_key}_{mode_suffix}.json.gz")
             raw_mode = read_json_file(mode_path)
             if isinstance(raw_mode, list):
                 return raw_mode
+
+    if all_state_only:
+        all_state_path = os.path.join(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao, f"{family_key}_allstate.json.gz")
+        raw_all_state = read_json_file(all_state_path)
+        if isinstance(raw_all_state, list):
+            return raw_all_state
 
     split_path = os.path.join(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao, f"{family_key}.json.gz")
     raw = read_json_file(split_path)
@@ -2370,9 +2386,27 @@ def build_fog_low_cloud_figures_from_precomputed(
     figures: dict[str, go.Figure] = {}
     requested = requested_figure_ids or {"monthly_fog", "fog_share", "cloud_distribution", "fog_cloud_joint"}
     month_name_order = month_labels_for_numbers(month_numbers)
+    selected_state = {
+        "enso_norm": normalize_driver_selection(enso),
+        "iod_norm": normalize_driver_selection(iod),
+        "sam_norm": normalize_driver_selection(sam),
+        "mjo_norm": normalize_driver_selection(mjo),
+    }
+    all_state_selected = all(value == "all" for value in selected_state.values())
 
     # monthly fog/low cloud frequency
-    monthly_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "monthly_fog")) if "monthly_fog" in requested else pd.DataFrame()
+    monthly_df = (
+        pd.DataFrame(
+            load_precomputed_fog_low_cloud_for_airport(
+                icao,
+                "monthly_fog",
+                mode=fog_monthly_mode,
+                all_state_only=all_state_selected,
+            )
+        )
+        if "monthly_fog" in requested
+        else pd.DataFrame()
+    )
     if not monthly_df.empty:
         monthly_df = monthly_df[monthly_df["mode"] == fog_monthly_mode]
         monthly_df = filter_precomputed_rows_by_time(
@@ -2429,17 +2463,20 @@ def build_fog_low_cloud_figures_from_precomputed(
             figures["monthly_fog"] = fig
 
     # hourly fog/low cloud frequency
-    hourly_rows = load_precomputed_fog_low_cloud_for_airport(icao, "fog_share") if "fog_share" in requested else []
+    hourly_rows = (
+        load_precomputed_fog_low_cloud_for_airport(
+            icao,
+            "fog_share",
+            mode=fog_hourly_mode,
+            all_state_only=all_state_selected,
+        )
+        if "fog_share" in requested
+        else []
+    )
     if hourly_rows:
         season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
         selected_months = {m for m in month_numbers if m in season_months}
-        selected_state = {
-            "enso_norm": normalize_driver_selection(enso),
-            "iod_norm": normalize_driver_selection(iod),
-            "sam_norm": normalize_driver_selection(sam),
-            "mjo_norm": normalize_driver_selection(mjo),
-        }
-        require_all_only = all(value == "all" for value in selected_state.values())
+        require_all_only = all_state_selected
 
         # Aggregate directly to (year, hour) to avoid DataFrame melt/pivot memory overhead.
         agg_any: dict[tuple[int, int], list[float]] = {}
@@ -2591,7 +2628,18 @@ def build_fog_low_cloud_figures_from_precomputed(
             figures["fog_share"] = fig
 
     # dewpoint lines
-    dewpoint_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "fog_cloud_joint")) if "fog_cloud_joint" in requested else pd.DataFrame()
+    dewpoint_df = (
+        pd.DataFrame(
+            load_precomputed_fog_low_cloud_for_airport(
+                icao,
+                "fog_cloud_joint",
+                mode=fog_dewpoint_mode,
+                all_state_only=all_state_selected,
+            )
+        )
+        if "fog_cloud_joint" in requested
+        else pd.DataFrame()
+    )
     if not dewpoint_df.empty:
         dewpoint_df = dewpoint_df[dewpoint_df["mode"] == fog_dewpoint_mode]
         dewpoint_df = filter_precomputed_rows_by_time(
@@ -2671,6 +2719,7 @@ def build_fog_low_cloud_figures_from_precomputed(
                 icao,
                 "cloud_distribution",
                 mode=fog_wind_mode,
+                all_state_only=all_state_selected,
             )
     if wind_rows:
         season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))

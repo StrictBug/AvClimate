@@ -13,10 +13,12 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 FOG_DIR = os.path.join(REPO_ROOT, "statistics", "precomputed", "fog_low_cloud")
 
 MODES = ("all", "rain", "non_rain")
+FAMILIES = ("hourly", "dewpoint", "wind")
+STATE_KEYS = ("enso_norm", "iod_norm", "sam_norm", "mjo_norm")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Split fog wind precomputed shards into mode-specific files.")
+    parser = argparse.ArgumentParser(description="Split fog precomputed shards into mode and all-state files.")
     parser.add_argument("--output-dir", default=FOG_DIR, help="Fog precomputed directory")
     parser.add_argument("--icao", action="append", default=[], help="Only process this ICAO (repeatable)")
     return parser.parse_args()
@@ -48,8 +50,8 @@ def discover_icaos(output_dir: str) -> list[str]:
         path = os.path.join(output_dir, name)
         if not os.path.isdir(path):
             continue
-        wind_path = os.path.join(path, "wind.json.gz")
-        if os.path.exists(wind_path):
+        has_family = any(os.path.exists(os.path.join(path, f"{family}.json.gz")) for family in FAMILIES)
+        if has_family:
             items.append(name)
     return items
 
@@ -63,6 +65,10 @@ def split_rows(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         if mode in buckets:
             buckets[mode].append(row)
     return buckets
+
+
+def is_all_state_row(row: dict[str, Any]) -> bool:
+    return all(str(row.get(key, "")).strip().lower() == "all" for key in STATE_KEYS)
 
 
 def main() -> int:
@@ -83,21 +89,34 @@ def main() -> int:
     for idx, icao in enumerate(icaos, start=1):
         t0 = time.perf_counter()
         base_dir = os.path.join(output_dir, icao)
-        wind_path = os.path.join(base_dir, "wind.json.gz")
-        rows = read_json_gz(wind_path)
-        if not isinstance(rows, list) or not rows:
-            print(f"[{idx}/{len(icaos)}] {icao}: skipped (missing or empty wind shard)")
+        total_rows = 0
+        written = 0
+
+        for family in FAMILIES:
+            family_path = os.path.join(base_dir, f"{family}.json.gz")
+            rows = read_json_gz(family_path)
+            if not isinstance(rows, list) or not rows:
+                continue
+
+            total_rows += len(rows)
+            buckets = split_rows(rows)
+            for mode in MODES:
+                mode_rows = buckets.get(mode, [])
+                out_mode_path = os.path.join(base_dir, f"{family}_{mode}.json.gz")
+                write_json_gz_atomic(out_mode_path, mode_rows)
+                written += 1
+
+                all_state_rows = [row for row in mode_rows if isinstance(row, dict) and is_all_state_row(row)]
+                out_mode_allstate_path = os.path.join(base_dir, f"{family}_{mode}_allstate.json.gz")
+                write_json_gz_atomic(out_mode_allstate_path, all_state_rows)
+                written += 1
+
+        if written == 0:
+            print(f"[{idx}/{len(icaos)}] {icao}: skipped (missing or empty fog family shards)")
             continue
 
-        buckets = split_rows(rows)
-        written = 0
-        for mode in MODES:
-            out_path = os.path.join(base_dir, f"wind_{mode}.json.gz")
-            write_json_gz_atomic(out_path, buckets.get(mode, []))
-            written += 1
-
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
-        print(f"[{idx}/{len(icaos)}] {icao}: rows={len(rows)} files={written} elapsed_ms={elapsed_ms}")
+        print(f"[{idx}/{len(icaos)}] {icao}: rows={total_rows} files={written} elapsed_ms={elapsed_ms}")
         processed += 1
 
     total_ms = int((time.perf_counter() - started) * 1000)
