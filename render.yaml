@@ -4,7 +4,7 @@ services:
     env: python
     plan: free
     autoDeploy: true
-    buildCommand: bash scripts/helpers/bootstrap_data_from_release.sh && pip install -r webapp/requirements.txt
+    buildCommand: bash scripts/helpers/bootstrap_data_from_release.sh && python scripts/helpers/split_fog_wind_by_mode.py && pip install -r webapp/requirements.txt
     envVars:
       - key: CHARTS_MEMORY_GUARD_MB
         value: "430"

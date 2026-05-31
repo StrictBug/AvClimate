@@ -658,11 +658,32 @@ FOG_LOW_CLOUD_FAMILY_MAP = {
     "cloud_distribution": "wind",
 }
 
+FOG_MODE_TO_SUFFIX = {
+    "all": "all",
+    "rain": "rain",
+    "non_rain": "non_rain",
+}
 
-def load_precomputed_fog_low_cloud_for_airport(icao: str, family: str) -> list[dict[str, Any]]:
+
+def load_precomputed_fog_low_cloud_for_airport(
+    icao: str,
+    family: str,
+    *,
+    mode: str | None = None,
+) -> list[dict[str, Any]]:
     family_key = FOG_LOW_CLOUD_FAMILY_MAP.get(family)
     if family_key is None:
         return []
+
+    # For cloud distribution, prefer mode-specific shards when present.
+    # This keeps request-time memory bounded on small instances.
+    if family_key == "wind" and mode:
+        mode_suffix = FOG_MODE_TO_SUFFIX.get(str(mode).strip().lower())
+        if mode_suffix:
+            mode_path = os.path.join(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao, f"{family_key}_{mode_suffix}.json.gz")
+            raw_mode = read_json_file(mode_path)
+            if isinstance(raw_mode, list):
+                return raw_mode
 
     split_path = os.path.join(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao, f"{family_key}.json.gz")
     raw = read_json_file(split_path)
@@ -2558,7 +2579,11 @@ def build_fog_low_cloud_figures_from_precomputed(
                 rss_mb=f"{_rss_mb:.1f}",
             )
         else:
-            wind_rows = load_precomputed_fog_low_cloud_for_airport(icao, "cloud_distribution")
+            wind_rows = load_precomputed_fog_low_cloud_for_airport(
+                icao,
+                "cloud_distribution",
+                mode=fog_wind_mode,
+            )
     if wind_rows:
         season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
         selected_months = {m for m in month_numbers if m in season_months}
