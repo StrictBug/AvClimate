@@ -2395,66 +2395,106 @@ def build_fog_low_cloud_figures_from_precomputed(
     all_state_selected = all(value == "all" for value in selected_state.values())
 
     # monthly fog/low cloud frequency
-    monthly_df = (
-        pd.DataFrame(
-            load_precomputed_fog_low_cloud_for_airport(
-                icao,
-                "monthly_fog",
-                mode=fog_monthly_mode,
-                all_state_only=all_state_selected,
-            )
+    monthly_rows = (
+        load_precomputed_fog_low_cloud_for_airport(
+            icao,
+            "monthly_fog",
+            mode=fog_monthly_mode,
+            all_state_only=all_state_selected,
         )
         if "monthly_fog" in requested
-        else pd.DataFrame()
+        else []
     )
-    if not monthly_df.empty:
-        monthly_df = monthly_df[monthly_df["mode"] == fog_monthly_mode]
-        monthly_df = filter_precomputed_rows_by_time(
-            monthly_df,
-            year_col="bom_year",
-            month_col="bom_month",
-            year_start=year_start,
-            year_end=year_end,
-            month_numbers=month_numbers,
-            season=season,
-        )
-        monthly_df = filter_precomputed_rows_by_state(
-            monthly_df,
-            enso=enso,
-            iod=iod,
-            sam=sam,
-            mjo=mjo,
-        )
-        if not monthly_df.empty:
-            monthly_df = (
-                monthly_df.groupby(["bom_year", "bom_month"], as_index=False)[
-                    ["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]
+    if monthly_rows:
+        season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+        selected_months = {m for m in month_numbers if m in season_months}
+        require_all_only = all_state_selected
+
+        agg_any: dict[tuple[int, int], list[float]] = {}
+        agg_all_only: dict[tuple[int, int], list[float]] = {}
+        for row in monthly_rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                if str(row.get("mode", "")) != fog_monthly_mode:
+                    continue
+
+                row_year = int(row.get("bom_year", -1))
+                row_month = int(row.get("bom_month", -1))
+                if row_year < year_start or row_year > year_end:
+                    continue
+                if row_month not in selected_months:
+                    continue
+
+                enso_value = str(row.get("enso_norm", "")).strip().lower()
+                iod_value = str(row.get("iod_norm", "")).strip().lower()
+                sam_value = str(row.get("sam_norm", "")).strip().lower()
+                mjo_value = str(row.get("mjo_norm", "")).strip().lower()
+                is_all_row = (
+                    enso_value == "all"
+                    and iod_value == "all"
+                    and sam_value == "all"
+                    and mjo_value == "all"
+                )
+
+                if not require_all_only:
+                    if selected_state["enso_norm"] != "all" and enso_value != selected_state["enso_norm"]:
+                        continue
+                    if selected_state["iod_norm"] != "all" and iod_value != selected_state["iod_norm"]:
+                        continue
+                    if selected_state["sam_norm"] != "all" and sam_value != selected_state["sam_norm"]:
+                        continue
+                    if selected_state["mjo_norm"] != "all" and mjo_value != selected_state["mjo_norm"]:
+                        continue
+
+                key = (row_year, row_month)
+                vals = [
+                    float(row.get("Fog", 0.0) or 0.0),
+                    float(row.get("below 2000ft", 0.0) or 0.0),
+                    float(row.get("below 1500ft", 0.0) or 0.0),
+                    float(row.get("below 1000ft", 0.0) or 0.0),
+                    float(row.get("below 500ft", 0.0) or 0.0),
                 ]
-                .sum()
-            )
-            monthly_avg = (
-                monthly_df.groupby("bom_month", as_index=False)[["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]]
-                .mean()
-                .rename(columns={"bom_month": "month"})
-            )
-            monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
-            fog_monthly = monthly_avg[["Month", "Fog"]].rename(columns={"Fog": "Count"})
-            fog_monthly["Type"] = "Fog"
-            fog_monthly["Threshold"] = None
-            low_cloud_monthly = monthly_avg.melt(
-                id_vars=["month", "Month"],
-                value_vars=["below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"],
-                var_name="Threshold",
-                value_name="Count",
-            )
-            low_cloud_monthly["Type"] = "Low cloud"
-            combined = pd.concat(
-                [
-                    fog_monthly[["Month", "Count", "Type", "Threshold"]],
-                    low_cloud_monthly[["Month", "Count", "Type", "Threshold"]],
-                ],
-                ignore_index=True,
-            )
+
+                bucket = agg_any.get(key)
+                if bucket is None:
+                    agg_any[key] = vals
+                else:
+                    for idx in range(5):
+                        bucket[idx] += vals[idx]
+
+                if is_all_row:
+                    all_bucket = agg_all_only.get(key)
+                    if all_bucket is None:
+                        agg_all_only[key] = vals.copy()
+                    else:
+                        for idx in range(5):
+                            all_bucket[idx] += vals[idx]
+            except (TypeError, ValueError):
+                continue
+
+        selected_agg = agg_all_only if (require_all_only and agg_all_only) else agg_any
+        if selected_agg:
+            per_month_sum: dict[int, list[float]] = {month: [0.0, 0.0, 0.0, 0.0, 0.0] for month in month_numbers}
+            per_month_count: dict[int, int] = {month: 0 for month in month_numbers}
+            for (_, month), values in selected_agg.items():
+                if month not in per_month_sum:
+                    continue
+                for idx in range(5):
+                    per_month_sum[month][idx] += values[idx]
+                per_month_count[month] += 1
+
+            combined_rows: list[dict[str, Any]] = []
+            for month in month_numbers:
+                month_label = MONTH_NAMES[month - 1]
+                fog_val = (per_month_sum[month][0] / per_month_count[month]) if per_month_count[month] > 0 else 0.0
+                combined_rows.append({"Month": month_label, "Count": fog_val, "Type": "Fog", "Threshold": None})
+                combined_rows.append({"Month": month_label, "Count": (per_month_sum[month][1] / per_month_count[month]) if per_month_count[month] > 0 else 0.0, "Type": "Low cloud", "Threshold": "below 2000ft"})
+                combined_rows.append({"Month": month_label, "Count": (per_month_sum[month][2] / per_month_count[month]) if per_month_count[month] > 0 else 0.0, "Type": "Low cloud", "Threshold": "below 1500ft"})
+                combined_rows.append({"Month": month_label, "Count": (per_month_sum[month][3] / per_month_count[month]) if per_month_count[month] > 0 else 0.0, "Type": "Low cloud", "Threshold": "below 1000ft"})
+                combined_rows.append({"Month": month_label, "Count": (per_month_sum[month][4] / per_month_count[month]) if per_month_count[month] > 0 else 0.0, "Type": "Low cloud", "Threshold": "below 500ft"})
+
+            combined = pd.DataFrame(combined_rows)
             fig = build_fog_low_cloud_frequency_from_combined(
                 combined,
                 "Fog/Low Cloud Frequency",
@@ -2481,6 +2521,18 @@ def build_fog_low_cloud_figures_from_precomputed(
         # Aggregate directly to (year, hour) to avoid DataFrame melt/pivot memory overhead.
         agg_any: dict[tuple[int, int], list[float]] = {}
         agg_all_only: dict[tuple[int, int], list[float]] = {}
+
+        def update_hour_bucket(bucket_map: dict[tuple[int, int], list[float]], key: tuple[int, int], row_data: dict[str, Any]) -> None:
+            bucket = bucket_map.get(key)
+            if bucket is None:
+                bucket = [0.0, 0.0, 0.0, 0.0, 0.0]
+                bucket_map[key] = bucket
+            bucket[0] += float(row_data.get("Fog", 0.0) or 0.0)
+            bucket[1] += float(row_data.get("below 2000ft", 0.0) or 0.0)
+            bucket[2] += float(row_data.get("below 1500ft", 0.0) or 0.0)
+            bucket[3] += float(row_data.get("below 1000ft", 0.0) or 0.0)
+            bucket[4] += float(row_data.get("below 500ft", 0.0) or 0.0)
+
         for row in hourly_rows:
             if not isinstance(row, dict):
                 continue
@@ -2520,36 +2572,18 @@ def build_fog_low_cloud_figures_from_precomputed(
                         continue
 
                 key = (row_year, row_hour)
-                vals = [
-                    float(row.get("Fog", 0.0) or 0.0),
-                    float(row.get("below 2000ft", 0.0) or 0.0),
-                    float(row.get("below 1500ft", 0.0) or 0.0),
-                    float(row.get("below 1000ft", 0.0) or 0.0),
-                    float(row.get("below 500ft", 0.0) or 0.0),
-                ]
-
-                bucket = agg_any.get(key)
-                if bucket is None:
-                    agg_any[key] = vals
-                else:
-                    for idx in range(5):
-                        bucket[idx] += vals[idx]
+                update_hour_bucket(agg_any, key, row)
 
                 if is_all_row:
-                    all_bucket = agg_all_only.get(key)
-                    if all_bucket is None:
-                        agg_all_only[key] = vals.copy()
-                    else:
-                        for idx in range(5):
-                            all_bucket[idx] += vals[idx]
+                    update_hour_bucket(agg_all_only, key, row)
             except (TypeError, ValueError):
                 continue
 
         selected_agg = agg_all_only if (require_all_only and agg_all_only) else agg_any
         if selected_agg:
             # Match prior semantics: mean across years for each hour after (year, hour) sums.
-            per_hour_sum: dict[int, list[float]] = {hour: [0.0, 0.0, 0.0, 0.0, 0.0] for hour in range(24)}
-            per_hour_count: dict[int, int] = {hour: 0 for hour in range(24)}
+            per_hour_sum = [[0.0, 0.0, 0.0, 0.0, 0.0] for _ in range(24)]
+            per_hour_count = [0] * 24
             for (_, hour), values in selected_agg.items():
                 if hour < 0 or hour > 23:
                     continue
@@ -2561,24 +2595,13 @@ def build_fog_low_cloud_figures_from_precomputed(
                 (per_hour_sum[hour][0] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
                 for hour in range(24)
             ]
-            threshold_values: dict[str, list[float]] = {
-                "below 2000ft": [
-                    (per_hour_sum[hour][1] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
+            threshold_value_lists = [
+                [
+                    (per_hour_sum[hour][series_idx] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
                     for hour in range(24)
-                ],
-                "below 1500ft": [
-                    (per_hour_sum[hour][2] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
-                    for hour in range(24)
-                ],
-                "below 1000ft": [
-                    (per_hour_sum[hour][3] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
-                    for hour in range(24)
-                ],
-                "below 500ft": [
-                    (per_hour_sum[hour][4] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
-                    for hour in range(24)
-                ],
-            }
+                ]
+                for series_idx in range(1, 5)
+            ]
 
             threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
             hour_numbers = list(range(24))
@@ -2598,11 +2621,17 @@ def build_fog_low_cloud_figures_from_precomputed(
                 "below 1500ft": "#e57373",
                 "below 2000ft": "#ef9a9a",
             }
+            threshold_series_lookup = {
+                "below 2000ft": threshold_value_lists[0],
+                "below 1500ft": threshold_value_lists[1],
+                "below 1000ft": threshold_value_lists[2],
+                "below 500ft": threshold_value_lists[3],
+            }
             for threshold in threshold_order:
                 display_label = FOG_LOW_CLOUD_THRESHOLD_LABELS[threshold]
                 fig.add_bar(
                     x=low_cloud_x,
-                    y=threshold_values[threshold],
+                    y=threshold_series_lookup[threshold],
                     name=display_label,
                     marker_color=threshold_colors[threshold],
                     customdata=hour_hover_labels,

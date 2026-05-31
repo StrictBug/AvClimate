@@ -8,6 +8,16 @@ services:
     envVars:
       - key: CHARTS_MEMORY_GUARD_MB
         value: "430"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: GUNICORN_MAX_REQUESTS
+        value: "40"
+      - key: GUNICORN_MAX_REQUESTS_JITTER
+        value: "10"
+      - key: GUNICORN_TIMEOUT
+        value: "300"
+      - key: MALLOC_ARENA_MAX
+        value: "2"
       - key: AVCLIMATE_RELEASE_BASE_URL
         sync: false
       - key: AVCLIMATE_BY_ICAO_URL
