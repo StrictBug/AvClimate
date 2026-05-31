@@ -2704,7 +2704,7 @@ def build_fog_low_cloud_figures_from_precomputed(
         _near_guard = (
             _guard_mb > 0
             and _rss_mb is not None
-            and _rss_mb >= max(0.0, _guard_mb - 180.0)
+            and _rss_mb >= max(0.0, _guard_mb - 50.0)
         )
         if _near_guard:
             log_memory_phase(
