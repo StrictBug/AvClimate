@@ -1,4 +1,6 @@
 import base64
+import ctypes
+import gc
 import glob
 import gzip
 import json
@@ -229,6 +231,21 @@ def log_memory_phase(phase: str, **fields: Any) -> None:
     for key, value in fields.items():
         parts.append(f"{key}={value}")
     LOG.info("[mem] " + " ".join(parts))
+
+
+def trim_process_memory() -> None:
+    try:
+        gc.collect()
+    except Exception:
+        pass
+
+    try:
+        libc = ctypes.CDLL("libc.so.6")
+        trim = getattr(libc, "malloc_trim", None)
+        if trim is not None:
+            trim(0)
+    except Exception:
+        pass
 
 
 def configured_memory_guard_mb() -> float:
@@ -2412,52 +2429,124 @@ def build_fog_low_cloud_figures_from_precomputed(
             figures["monthly_fog"] = fig
 
     # hourly fog/low cloud frequency
-    hourly_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "fog_share")) if "fog_share" in requested else pd.DataFrame()
-    if not hourly_df.empty:
-        hourly_df = hourly_df[hourly_df["mode"] == fog_hourly_mode]
-        hourly_df = filter_precomputed_rows_by_time(
-            hourly_df,
-            year_col="bom_year",
-            month_col="bom_month",
-            year_start=year_start,
-            year_end=year_end,
-            month_numbers=month_numbers,
-            season=season,
-        )
-        hourly_df = filter_precomputed_rows_by_state(
-            hourly_df,
-            enso=enso,
-            iod=iod,
-            sam=sam,
-            mjo=mjo,
-        )
-        if not hourly_df.empty:
-            hourly_counts = (
-                hourly_df.groupby(["bom_year", "hour"], as_index=False)[
-                    ["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]
+    hourly_rows = load_precomputed_fog_low_cloud_for_airport(icao, "fog_share") if "fog_share" in requested else []
+    if hourly_rows:
+        season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+        selected_months = {m for m in month_numbers if m in season_months}
+        selected_state = {
+            "enso_norm": normalize_driver_selection(enso),
+            "iod_norm": normalize_driver_selection(iod),
+            "sam_norm": normalize_driver_selection(sam),
+            "mjo_norm": normalize_driver_selection(mjo),
+        }
+        require_all_only = all(value == "all" for value in selected_state.values())
+
+        # Aggregate directly to (year, hour) to avoid DataFrame melt/pivot memory overhead.
+        agg_any: dict[tuple[int, int], list[float]] = {}
+        agg_all_only: dict[tuple[int, int], list[float]] = {}
+        for row in hourly_rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                if str(row.get("mode", "")) != fog_hourly_mode:
+                    continue
+
+                row_year = int(row.get("bom_year", -1))
+                row_month = int(row.get("bom_month", -1))
+                row_hour = int(row.get("hour", -1))
+                if row_year < year_start or row_year > year_end:
+                    continue
+                if row_month not in selected_months:
+                    continue
+                if row_hour < 0 or row_hour > 23:
+                    continue
+
+                enso_value = str(row.get("enso_norm", "")).strip().lower()
+                iod_value = str(row.get("iod_norm", "")).strip().lower()
+                sam_value = str(row.get("sam_norm", "")).strip().lower()
+                mjo_value = str(row.get("mjo_norm", "")).strip().lower()
+                is_all_row = (
+                    enso_value == "all"
+                    and iod_value == "all"
+                    and sam_value == "all"
+                    and mjo_value == "all"
+                )
+
+                if not require_all_only:
+                    if selected_state["enso_norm"] != "all" and enso_value != selected_state["enso_norm"]:
+                        continue
+                    if selected_state["iod_norm"] != "all" and iod_value != selected_state["iod_norm"]:
+                        continue
+                    if selected_state["sam_norm"] != "all" and sam_value != selected_state["sam_norm"]:
+                        continue
+                    if selected_state["mjo_norm"] != "all" and mjo_value != selected_state["mjo_norm"]:
+                        continue
+
+                key = (row_year, row_hour)
+                vals = [
+                    float(row.get("Fog", 0.0) or 0.0),
+                    float(row.get("below 2000ft", 0.0) or 0.0),
+                    float(row.get("below 1500ft", 0.0) or 0.0),
+                    float(row.get("below 1000ft", 0.0) or 0.0),
+                    float(row.get("below 500ft", 0.0) or 0.0),
                 ]
-                .sum()
-            )
-            hourly_avg = hourly_counts.groupby("hour", as_index=False)[["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]].mean()
-            hourly_avg["Hour"] = hourly_avg["hour"].astype(int).astype(str)
+
+                bucket = agg_any.get(key)
+                if bucket is None:
+                    agg_any[key] = vals
+                else:
+                    for idx in range(5):
+                        bucket[idx] += vals[idx]
+
+                if is_all_row:
+                    all_bucket = agg_all_only.get(key)
+                    if all_bucket is None:
+                        agg_all_only[key] = vals.copy()
+                    else:
+                        for idx in range(5):
+                            all_bucket[idx] += vals[idx]
+            except (TypeError, ValueError):
+                continue
+
+        selected_agg = agg_all_only if (require_all_only and agg_all_only) else agg_any
+        if selected_agg:
+            # Match prior semantics: mean across years for each hour after (year, hour) sums.
+            per_hour_sum: dict[int, list[float]] = {hour: [0.0, 0.0, 0.0, 0.0, 0.0] for hour in range(24)}
+            per_hour_count: dict[int, int] = {hour: 0 for hour in range(24)}
+            for (_, hour), values in selected_agg.items():
+                if hour < 0 or hour > 23:
+                    continue
+                for idx in range(5):
+                    per_hour_sum[hour][idx] += values[idx]
+                per_hour_count[hour] += 1
+
+            fog_by_hour_values = [
+                (per_hour_sum[hour][0] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
+                for hour in range(24)
+            ]
+            threshold_values: dict[str, list[float]] = {
+                "below 2000ft": [
+                    (per_hour_sum[hour][1] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
+                    for hour in range(24)
+                ],
+                "below 1500ft": [
+                    (per_hour_sum[hour][2] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
+                    for hour in range(24)
+                ],
+                "below 1000ft": [
+                    (per_hour_sum[hour][3] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
+                    for hour in range(24)
+                ],
+                "below 500ft": [
+                    (per_hour_sum[hour][4] / per_hour_count[hour]) if per_hour_count[hour] > 0 else 0.0
+                    for hour in range(24)
+                ],
+            }
 
             threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
             hour_numbers = list(range(24))
             hour_labels = [str(hour) for hour in hour_numbers]
             hour_hover_labels = [f"{hour:02d}Z" for hour in range(24)]
-
-            low_cloud_stack = (
-                hourly_avg.melt(
-                    id_vars=["hour", "Hour"],
-                    value_vars=["below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"],
-                    var_name="Threshold",
-                    value_name="Count",
-                )
-                .pivot_table(index="Hour", columns="Threshold", values="Count", aggfunc="sum")
-                .reindex(hour_labels)
-                .fillna(0.0)
-            )
-            fog_by_hour = hourly_avg.set_index("Hour")["Fog"].reindex(hour_labels).fillna(0.0)
 
             fig = go.Figure()
             low_cloud_x = [hour - 0.22 for hour in hour_numbers]
@@ -2473,11 +2562,10 @@ def build_fog_low_cloud_figures_from_precomputed(
                 "below 2000ft": "#ef9a9a",
             }
             for threshold in threshold_order:
-                y_values = low_cloud_stack[threshold].astype(float).tolist() if threshold in low_cloud_stack.columns else [0.0] * len(hour_labels)
                 display_label = FOG_LOW_CLOUD_THRESHOLD_LABELS[threshold]
                 fig.add_bar(
                     x=low_cloud_x,
-                    y=y_values,
+                    y=threshold_values[threshold],
                     name=display_label,
                     marker_color=threshold_colors[threshold],
                     customdata=hour_hover_labels,
@@ -2490,7 +2578,7 @@ def build_fog_low_cloud_figures_from_precomputed(
 
             fig.add_bar(
                 x=fog_x,
-                y=fog_by_hour.astype(float).tolist(),
+                y=fog_by_hour_values,
                 name="Fog",
                 marker_color="#d4af37",
                 customdata=hour_hover_labels,
@@ -4174,6 +4262,7 @@ def charts(
                     figures=len(precomputed_figures),
                     elapsed_ms=elapsed_ms,
                 )
+                trim_process_memory()
                 return {
                     "section": section,
                     "figures": precomputed_figures,
@@ -4363,6 +4452,7 @@ def charts(
                         figures=len(figures),
                         elapsed_ms=elapsed_ms,
                     )
+                    trim_process_memory()
                     return {
                         "section": section,
                         "figures": figures,
@@ -4438,6 +4528,7 @@ def charts(
                     figures=len(figures),
                     elapsed_ms=elapsed_ms,
                 )
+                trim_process_memory()
                 return {
                     "section": section,
                     "figures": figures,
@@ -4537,6 +4628,7 @@ def charts(
                     figures=len(figures),
                     elapsed_ms=elapsed_ms,
                 )
+                trim_process_memory()
                 return {
                     "section": section,
                     "figures": figures,
@@ -4618,6 +4710,7 @@ def charts(
                         figures=len(figures),
                         elapsed_ms=elapsed_ms,
                     )
+                    trim_process_memory()
                     return {
                         "section": section,
                         "figures": figures,
