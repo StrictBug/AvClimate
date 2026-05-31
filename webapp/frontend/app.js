@@ -517,6 +517,9 @@ function getSectionFigureBatches(section) {
   if (section === "overview") {
     return [["wind_rose"], ["rain_thunder"], ["temp_dewpoint"], ["fog_low_cloud"]];
   }
+  if (section === "fog_low_cloud") {
+    return [["monthly_fog"], ["fog_share"], ["cloud_distribution"], ["fog_cloud_joint"]];
+  }
   return [[]];
 }
 

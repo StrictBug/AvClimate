@@ -642,103 +642,13 @@ def load_precomputed_precipitation_for_airport(icao: str) -> dict[str, list[dict
 def _parse_fog_precomputed_payload(raw: Any) -> dict[str, list[dict[str, Any]]]:
     if not isinstance(raw, dict):
         return {}
-
-    def parse_rows(rows: Any, fields: dict[str, str]) -> list[dict[str, Any]]:
-        if not isinstance(rows, list):
-            return []
-        out: list[dict[str, Any]] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            parsed: dict[str, Any] = {}
-            ok = True
-            for key, dtype in fields.items():
-                value = row.get(key)
-                try:
-                    if dtype == "int":
-                        parsed[key] = int(value)
-                    elif dtype == "float":
-                        parsed[key] = float(value)
-                    else:
-                        parsed[key] = str(value).strip().lower() if dtype == "norm" else str(value)
-                except (TypeError, ValueError):
-                    ok = False
-                    break
-            if ok:
-                out.append(parsed)
-        return out
-
     payload: dict[str, list[dict[str, Any]]] = {}
-    payload["monthly"] = parse_rows(
-        raw.get("monthly", []),
-        {
-            "bom_year": "int",
-            "bom_month": "int",
-            "mode": "str",
-            "enso_norm": "norm",
-            "iod_norm": "norm",
-            "sam_norm": "norm",
-            "mjo_norm": "norm",
-            "Fog": "float",
-            "below 2000ft": "float",
-            "below 1500ft": "float",
-            "below 1000ft": "float",
-            "below 500ft": "float",
-        },
-    )
-    payload["hourly"] = parse_rows(
-        raw.get("hourly", []),
-        {
-            "bom_year": "int",
-            "bom_month": "int",
-            "hour": "int",
-            "mode": "str",
-            "enso_norm": "norm",
-            "iod_norm": "norm",
-            "sam_norm": "norm",
-            "mjo_norm": "norm",
-            "Fog": "float",
-            "below 2000ft": "float",
-            "below 1500ft": "float",
-            "below 1000ft": "float",
-            "below 500ft": "float",
-        },
-    )
-    payload["dewpoint"] = parse_rows(
-        raw.get("dewpoint", []),
-        {
-            "bom_year": "int",
-            "bom_month": "int",
-            "mode": "str",
-            "enso_norm": "norm",
-            "iod_norm": "norm",
-            "sam_norm": "norm",
-            "mjo_norm": "norm",
-            "Category": "str",
-            "dwpt_sum": "float",
-            "dwpt_count": "float",
-        },
-    )
-    payload["wind"] = parse_rows(
-        raw.get("wind", []),
-        {
-            "bom_year": "int",
-            "bom_month": "int",
-            "mode": "str",
-            "enso_norm": "norm",
-            "iod_norm": "norm",
-            "sam_norm": "norm",
-            "mjo_norm": "norm",
-            "Category": "str",
-            "dir_bin_10": "int",
-            "speed_bin": "int",
-            "Count": "float",
-        },
-    )
+    for key in ("monthly", "hourly", "dewpoint", "wind"):
+        rows = raw.get(key, [])
+        payload[key] = rows if isinstance(rows, list) else []
     return payload
 
 
-@lru_cache(maxsize=128)
 def load_precomputed_fog_low_cloud_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
     raw = read_json_file(precomputed_airport_file(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao))
     return _parse_fog_precomputed_payload(raw)
@@ -747,93 +657,13 @@ def load_precomputed_fog_low_cloud_for_airport(icao: str) -> dict[str, list[dict
 def _parse_smoke_precomputed_payload(raw: Any) -> dict[str, list[dict[str, Any]]]:
     if not isinstance(raw, dict):
         return {}
-
-    def parse_rows(rows: Any, fields: dict[str, str]) -> list[dict[str, Any]]:
-        if not isinstance(rows, list):
-            return []
-        out: list[dict[str, Any]] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            parsed: dict[str, Any] = {}
-            ok = True
-            for key, dtype in fields.items():
-                value = row.get(key)
-                try:
-                    if dtype == "int":
-                        parsed[key] = int(value)
-                    elif dtype == "float":
-                        parsed[key] = float(value)
-                    else:
-                        parsed[key] = str(value).strip().lower() if dtype == "norm" else str(value)
-                except (TypeError, ValueError):
-                    ok = False
-                    break
-            if ok:
-                out.append(parsed)
-        return out
-
     payload: dict[str, list[dict[str, Any]]] = {}
-    payload["monthly"] = parse_rows(
-        raw.get("monthly", []),
-        {
-            "year": "int",
-            "month": "int",
-            "enso_norm": "norm",
-            "iod_norm": "norm",
-            "sam_norm": "norm",
-            "mjo_norm": "norm",
-            "Phenomenon": "str",
-            "Count": "float",
-        },
-    )
-    payload["hourly"] = parse_rows(
-        raw.get("hourly", []),
-        {
-            "year": "int",
-            "month": "int",
-            "hour": "int",
-            "enso_norm": "norm",
-            "iod_norm": "norm",
-            "sam_norm": "norm",
-            "mjo_norm": "norm",
-            "Phenomenon": "str",
-            "Count": "float",
-        },
-    )
-    payload["scatter"] = parse_rows(
-        raw.get("scatter", []),
-        {
-            "year": "int",
-            "month": "int",
-            "enso_norm": "norm",
-            "iod_norm": "norm",
-            "sam_norm": "norm",
-            "mjo_norm": "norm",
-            "Phenomenon": "str",
-            "DWPT": "float",
-            "WND_SPD": "float",
-        },
-    )
-    payload["radial"] = parse_rows(
-        raw.get("radial", []),
-        {
-            "year": "int",
-            "month": "int",
-            "enso_norm": "norm",
-            "iod_norm": "norm",
-            "sam_norm": "norm",
-            "mjo_norm": "norm",
-            "Phenomenon": "str",
-            "dir_bin_10": "int",
-            "speed_bin": "int",
-            "Count": "float",
-        },
-    )
+    for key in ("monthly", "hourly", "scatter", "radial"):
+        rows = raw.get(key, [])
+        payload[key] = rows if isinstance(rows, list) else []
     return payload
 
 
-@lru_cache(maxsize=128)
 def load_precomputed_smoke_dust_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
     raw = read_json_file(precomputed_airport_file(SMOKE_DUST_PRECOMPUTED_DIR, icao))
     return _parse_smoke_precomputed_payload(raw)
@@ -2465,6 +2295,7 @@ def build_precipitation_figures_from_precomputed(
 def build_fog_low_cloud_figures_from_precomputed(
     icao: str,
     *,
+    requested_figure_ids: set[str] | None,
     month_numbers: list[int],
     season: str,
     year_start: int,
@@ -2483,10 +2314,11 @@ def build_fog_low_cloud_figures_from_precomputed(
         return {}
 
     figures: dict[str, go.Figure] = {}
+    requested = requested_figure_ids or {"monthly_fog", "fog_share", "cloud_distribution", "fog_cloud_joint"}
     month_name_order = month_labels_for_numbers(month_numbers)
 
     # monthly fog/low cloud frequency
-    monthly_df = pd.DataFrame(payload.get("monthly", []))
+    monthly_df = pd.DataFrame(payload.get("monthly", [])) if "monthly_fog" in requested else pd.DataFrame()
     if not monthly_df.empty:
         monthly_df = monthly_df[monthly_df["mode"] == fog_monthly_mode]
         monthly_df = filter_precomputed_rows_by_time(
@@ -2543,7 +2375,7 @@ def build_fog_low_cloud_figures_from_precomputed(
             figures["monthly_fog"] = fig
 
     # hourly fog/low cloud frequency
-    hourly_df = pd.DataFrame(payload.get("hourly", []))
+    hourly_df = pd.DataFrame(payload.get("hourly", [])) if "fog_share" in requested else pd.DataFrame()
     if not hourly_df.empty:
         hourly_df = hourly_df[hourly_df["mode"] == fog_hourly_mode]
         hourly_df = filter_precomputed_rows_by_time(
@@ -2634,7 +2466,7 @@ def build_fog_low_cloud_figures_from_precomputed(
             figures["fog_share"] = fig
 
     # dewpoint lines
-    dewpoint_df = pd.DataFrame(payload.get("dewpoint", []))
+    dewpoint_df = pd.DataFrame(payload.get("dewpoint", [])) if "fog_cloud_joint" in requested else pd.DataFrame()
     if not dewpoint_df.empty:
         dewpoint_df = dewpoint_df[dewpoint_df["mode"] == fog_dewpoint_mode]
         dewpoint_df = filter_precomputed_rows_by_time(
@@ -2692,7 +2524,7 @@ def build_fog_low_cloud_figures_from_precomputed(
                     figures["fog_cloud_joint"] = fig
 
     # wind distribution plot
-    wind_df = pd.DataFrame(payload.get("wind", []))
+    wind_df = pd.DataFrame(payload.get("wind", [])) if "cloud_distribution" in requested else pd.DataFrame()
     if not wind_df.empty:
         wind_df = wind_df[wind_df["mode"] == fog_wind_mode]
         wind_df = filter_precomputed_rows_by_time(
@@ -4522,6 +4354,7 @@ def charts(
 
             built = build_fog_low_cloud_figures_from_precomputed(
                 icao,
+                requested_figure_ids=requested_fog_ids,
                 month_numbers=month_number_order,
                 season=season,
                 year_start=yearStart,
