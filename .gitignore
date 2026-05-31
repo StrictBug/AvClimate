@@ -31,6 +31,8 @@ artifacts/
 !statistics/precomputed/fog_low_cloud/
 !statistics/precomputed/fog_low_cloud/*.json
 !statistics/precomputed/fog_low_cloud/*.json.gz
+!statistics/precomputed/fog_low_cloud/*/
+!statistics/precomputed/fog_low_cloud/*/*.json.gz
 !statistics/precomputed/smoke_dust/
 !statistics/precomputed/smoke_dust/*.json
 !statistics/precomputed/smoke_dust/*.json.gz

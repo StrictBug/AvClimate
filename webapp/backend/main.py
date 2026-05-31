@@ -649,9 +649,27 @@ def _parse_fog_precomputed_payload(raw: Any) -> dict[str, list[dict[str, Any]]]:
     return payload
 
 
-def load_precomputed_fog_low_cloud_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
-    raw = read_json_file(precomputed_airport_file(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao))
-    return _parse_fog_precomputed_payload(raw)
+FOG_LOW_CLOUD_FAMILY_MAP = {
+    "monthly_fog": "monthly",
+    "fog_share": "hourly",
+    "fog_cloud_joint": "dewpoint",
+    "cloud_distribution": "wind",
+}
+
+
+def load_precomputed_fog_low_cloud_for_airport(icao: str, family: str) -> list[dict[str, Any]]:
+    family_key = FOG_LOW_CLOUD_FAMILY_MAP.get(family)
+    if family_key is None:
+        return []
+
+    split_path = os.path.join(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao, f"{family_key}.json.gz")
+    raw = read_json_file(split_path)
+    if isinstance(raw, list):
+        return raw
+
+    legacy_raw = read_json_file(precomputed_airport_file(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao))
+    legacy_payload = _parse_fog_precomputed_payload(legacy_raw)
+    return legacy_payload.get(family_key, [])
 
 
 def _parse_smoke_precomputed_payload(raw: Any) -> dict[str, list[dict[str, Any]]]:
@@ -2309,16 +2327,12 @@ def build_fog_low_cloud_figures_from_precomputed(
     fog_wind_mode: str,
     fog_dewpoint_mode: str,
 ) -> dict[str, go.Figure]:
-    payload = load_precomputed_fog_low_cloud_for_airport(icao)
-    if not payload:
-        return {}
-
     figures: dict[str, go.Figure] = {}
     requested = requested_figure_ids or {"monthly_fog", "fog_share", "cloud_distribution", "fog_cloud_joint"}
     month_name_order = month_labels_for_numbers(month_numbers)
 
     # monthly fog/low cloud frequency
-    monthly_df = pd.DataFrame(payload.get("monthly", [])) if "monthly_fog" in requested else pd.DataFrame()
+    monthly_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "monthly_fog")) if "monthly_fog" in requested else pd.DataFrame()
     if not monthly_df.empty:
         monthly_df = monthly_df[monthly_df["mode"] == fog_monthly_mode]
         monthly_df = filter_precomputed_rows_by_time(
@@ -2375,7 +2389,7 @@ def build_fog_low_cloud_figures_from_precomputed(
             figures["monthly_fog"] = fig
 
     # hourly fog/low cloud frequency
-    hourly_df = pd.DataFrame(payload.get("hourly", [])) if "fog_share" in requested else pd.DataFrame()
+    hourly_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "fog_share")) if "fog_share" in requested else pd.DataFrame()
     if not hourly_df.empty:
         hourly_df = hourly_df[hourly_df["mode"] == fog_hourly_mode]
         hourly_df = filter_precomputed_rows_by_time(
@@ -2466,7 +2480,7 @@ def build_fog_low_cloud_figures_from_precomputed(
             figures["fog_share"] = fig
 
     # dewpoint lines
-    dewpoint_df = pd.DataFrame(payload.get("dewpoint", [])) if "fog_cloud_joint" in requested else pd.DataFrame()
+    dewpoint_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "fog_cloud_joint")) if "fog_cloud_joint" in requested else pd.DataFrame()
     if not dewpoint_df.empty:
         dewpoint_df = dewpoint_df[dewpoint_df["mode"] == fog_dewpoint_mode]
         dewpoint_df = filter_precomputed_rows_by_time(
@@ -2524,7 +2538,7 @@ def build_fog_low_cloud_figures_from_precomputed(
                     figures["fog_cloud_joint"] = fig
 
     # wind distribution plot
-    wind_df = pd.DataFrame(payload.get("wind", [])) if "cloud_distribution" in requested else pd.DataFrame()
+    wind_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "cloud_distribution")) if "cloud_distribution" in requested else pd.DataFrame()
     if not wind_df.empty:
         wind_df = wind_df[wind_df["mode"] == fog_wind_mode]
         wind_df = filter_precomputed_rows_by_time(
