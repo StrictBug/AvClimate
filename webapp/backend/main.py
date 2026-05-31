@@ -57,6 +57,8 @@ LIGHTNING_RADIUS_KM = 8.0
 LIGHTNING_WINDOW_MINUTES = 10
 LIGHTNING_COVERAGE_START_UTC = pd.Timestamp("2008-02-25T00:00:00Z")
 LIGHTNING_STATS_MIN_YEAR = 2009  # Only full-year lightning data from 2009 onwards
+FOG_CLOUD_DISTRIBUTION_MAX_SPEED_BIN = 120
+FOG_CLOUD_DISTRIBUTION_MAX_HOVER_POINTS = 4000
 
 MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 MONTH_TO_NUM = {m: i + 1 for i, m in enumerate(MONTH_NAMES)}
@@ -2537,9 +2539,8 @@ def build_fog_low_cloud_figures_from_precomputed(
                     fig.update_yaxes(title_text="Avg Dewpoint (°C)")
                     figures["fog_cloud_joint"] = fig
 
-    # wind distribution plot — guard check happens BEFORE loading the shard because the
-    # data load itself can spike memory enough to OOM on Render free tier.
-    wind_df = pd.DataFrame()
+    # wind distribution plot — keep this path memory-bounded on Render free tier.
+    wind_rows: list[dict[str, Any]] = []
     if "cloud_distribution" in requested:
         _guard_mb = configured_memory_guard_mb()
         _rss_mb = current_rss_mb()
@@ -2557,32 +2558,85 @@ def build_fog_low_cloud_figures_from_precomputed(
                 rss_mb=f"{_rss_mb:.1f}",
             )
         else:
-            wind_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "cloud_distribution"))
-    if not wind_df.empty:
+            wind_rows = load_precomputed_fog_low_cloud_for_airport(icao, "cloud_distribution")
+    if wind_rows:
+        season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+        selected_months = {m for m in month_numbers if m in season_months}
+        selected_state = {
+            "enso_norm": normalize_driver_selection(enso),
+            "iod_norm": normalize_driver_selection(iod),
+            "sam_norm": normalize_driver_selection(sam),
+            "mjo_norm": normalize_driver_selection(mjo),
+        }
 
-        wind_df = wind_df[wind_df["mode"] == fog_wind_mode]
-        wind_df = filter_precomputed_rows_by_time(
-            wind_df,
-            year_col="bom_year",
-            month_col="bom_month",
-            year_start=year_start,
-            year_end=year_end,
-            month_numbers=month_numbers,
-            season=season,
-        )
-        wind_df = filter_precomputed_rows_by_state(
-            wind_df,
-            enso=enso,
-            iod=iod,
-            sam=sam,
-            mjo=mjo,
-        )
-        if not wind_df.empty:
+        counts_any: dict[tuple[str, int, int], float] = {}
+        counts_all_only: dict[tuple[str, int, int], float] = {}
+        require_all_only = all(value == "all" for value in selected_state.values())
+
+        for row in wind_rows:
+            try:
+                if str(row.get("mode", "")) != fog_wind_mode:
+                    continue
+
+                row_year = int(row.get("bom_year", -1))
+                row_month = int(row.get("bom_month", -1))
+                if row_year < year_start or row_year > year_end:
+                    continue
+                if row_month not in selected_months:
+                    continue
+
+                enso_value = str(row.get("enso_norm", "")).strip().lower()
+                iod_value = str(row.get("iod_norm", "")).strip().lower()
+                sam_value = str(row.get("sam_norm", "")).strip().lower()
+                mjo_value = str(row.get("mjo_norm", "")).strip().lower()
+
+                is_all_row = (
+                    enso_value == "all"
+                    and iod_value == "all"
+                    and sam_value == "all"
+                    and mjo_value == "all"
+                )
+
+                if not require_all_only:
+                    if selected_state["enso_norm"] != "all" and enso_value != selected_state["enso_norm"]:
+                        continue
+                    if selected_state["iod_norm"] != "all" and iod_value != selected_state["iod_norm"]:
+                        continue
+                    if selected_state["sam_norm"] != "all" and sam_value != selected_state["sam_norm"]:
+                        continue
+                    if selected_state["mjo_norm"] != "all" and mjo_value != selected_state["mjo_norm"]:
+                        continue
+
+                label = str(row.get("Category", "")).strip()
+                speed_bin = int(row.get("speed_bin", 0))
+                dir_bin = int(row.get("dir_bin_10", 0))
+                count = float(row.get("Count", 0.0) or 0.0)
+                if count <= 0.0:
+                    continue
+
+                key = (label, speed_bin, dir_bin)
+                counts_any[key] = counts_any.get(key, 0.0) + count
+                if is_all_row:
+                    counts_all_only[key] = counts_all_only.get(key, 0.0) + count
+            except (TypeError, ValueError):
+                continue
+
+        # Match dataframe-state filtering semantics: if all drivers selected, prefer rows
+        # where every driver is "all" when those rows exist.
+        grouped_counts = counts_any
+        if require_all_only and counts_all_only:
+            grouped_counts = counts_all_only
+
+        # Free parsed JSON rows before heavy numpy/plotly allocations.
+        del wind_rows
+
+        if grouped_counts:
             direction_step = 10.0
             speed_step = 1.0
             dir_edges = np.arange(0.0, 360.0 + direction_step, direction_step)
             dir_centers = dir_edges[:-1] + (direction_step / 2.0)
-            max_speed_bin = int(max(10, wind_df["speed_bin"].max()))
+            max_speed_bin_raw = int(max(10, max(speed for (_, speed, _) in grouped_counts.keys())))
+            max_speed_bin = min(max_speed_bin_raw, FOG_CLOUD_DISTRIBUTION_MAX_SPEED_BIN)
             max_speed = max(10.0, float(math.ceil((max_speed_bin * 1.1) / 5.0) * 5.0))
             speed_edges = np.arange(0.0, max_speed + speed_step, speed_step)
             cutoff_pct = 0.1
@@ -2628,20 +2682,19 @@ def build_fog_low_cloud_figures_from_precomputed(
             layer_fields: dict[str, np.ndarray] = {}
             layer_order = ["2000ft - 1500ft cloud", "1500ft - 1000ft cloud", "1000ft - 500ft cloud", "< 500ft cloud", "Fog"]
             for label in layer_order:
-                sub = wind_df[wind_df["Category"] == label]
-                if sub.empty:
-                    continue
-
                 hist2d = np.zeros((len(speed_edges) - 1, len(dir_edges) - 1), dtype=float)
-                grouped = sub.groupby(["speed_bin", "dir_bin_10"], as_index=False)["Count"].sum()
-                for _, row in grouped.iterrows():
-                    sbin = int(row["speed_bin"])
-                    dbin = int(row["dir_bin_10"])
+                label_total = 0.0
+                for (row_label, sbin, dbin), count in grouped_counts.items():
+                    if row_label != label:
+                        continue
+                    if sbin > FOG_CLOUD_DISTRIBUTION_MAX_SPEED_BIN:
+                        sbin = FOG_CLOUD_DISTRIBUTION_MAX_SPEED_BIN
                     s_idx = min(max(0, sbin), hist2d.shape[0] - 1)
                     d_idx = ((dbin // 10) % 36)
-                    hist2d[s_idx, d_idx] += float(row["Count"])
+                    hist2d[s_idx, d_idx] += float(count)
+                    label_total += float(count)
 
-                total_obs = float(hist2d.sum())
+                total_obs = label_total
                 if total_obs <= 0:
                     continue
 
@@ -2683,15 +2736,18 @@ def build_fog_low_cloud_figures_from_precomputed(
 
             if traces_added > 0:
                 speed_centers = speed_edges[:-1] + (speed_step / 2.0)
-                theta_mesh = np.tile(dir_centers, len(speed_centers))
-                r_mesh = np.repeat(speed_centers, len(dir_centers))
+                mesh_stride = max(1, int(math.ceil((len(speed_centers) * len(dir_centers)) / FOG_CLOUD_DISTRIBUTION_MAX_HOVER_POINTS)))
+                sampled_speed_idx = np.arange(0, len(speed_centers), mesh_stride, dtype=int)
+                sampled_speed_centers = speed_centers[sampled_speed_idx]
+                theta_mesh = np.tile(dir_centers, len(sampled_speed_centers))
+                r_mesh = np.repeat(sampled_speed_centers, len(dir_centers))
                 custom_rows: list[list[float]] = []
                 hover_order = ["Fog", "2000ft - 1500ft cloud", "1500ft - 1000ft cloud", "1000ft - 500ft cloud", "< 500ft cloud"]
                 hover_fields = {
                     code: layer_fields.get(code, np.zeros((len(speed_centers), len(dir_centers)), dtype=float))
                     for code in hover_order
                 }
-                for speed_idx in range(len(speed_centers)):
+                for speed_idx in sampled_speed_idx:
                     for dir_idx in range(len(dir_centers)):
                         custom_rows.append([
                             float(hover_fields["Fog"][speed_idx, dir_idx]),
