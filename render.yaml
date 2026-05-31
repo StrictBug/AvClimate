@@ -5,5 +5,8 @@ services:
     plan: free
     autoDeploy: true
     buildCommand: pip install -r webapp/requirements.txt
+    envVars:
+      - key: CHARTS_MEMORY_GUARD_MB
+        value: "430"
     startCommand: python -m uvicorn webapp.backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/options

@@ -513,6 +513,13 @@ function getParams() {
   return params;
 }
 
+function getSectionFigureBatches(section) {
+  if (section === "overview") {
+    return [["wind_rose"], ["rain_thunder"], ["temp_dewpoint"], ["fog_low_cloud"]];
+  }
+  return [[]];
+}
+
 function validateRanges() {
   const yearStart = Number(els.yearStart.value);
   const yearEnd = Number(els.yearEnd.value);
@@ -2633,14 +2640,56 @@ async function fetchCharts() {
   if (showOverlay) {
     showLoading("Loading charts...");
   }
-  const query = getParams().toString();
 
   try {
-    const res = await fetch(apiUrl(`/api/charts?${query}`), { signal: controller.signal });
-    if (showOverlay) {
-      setLoadingState(55, "Processing data...");
+    const batches = getSectionFigureBatches(requestedSection);
+    const allFigures = [];
+    let combinedMetrics = {};
+    let combinedWarning = "";
+
+    for (let i = 0; i < batches.length; i += 1) {
+      const batch = batches[i];
+      const params = getParams();
+      if (batch.length) {
+        params.set("figureIds", batch.join(","));
+      }
+      if (i > 0) {
+        params.set("includeMetrics", "false");
+      }
+
+      const batchProgress = 20 + Math.floor(((i + 1) / batches.length) * 45);
+      if (showOverlay) {
+        setLoadingState(batchProgress, `Processing data (${i + 1}/${batches.length})...`);
+      }
+
+      const res = await fetch(apiUrl(`/api/charts?${params.toString()}`), { signal: controller.signal });
+      const data = await res.json();
+
+      if (controller.signal.aborted) {
+        return;
+      }
+
+      if (data.error) {
+        setStatus(data.error);
+        return;
+      }
+
+      if (data.warning && !combinedWarning) {
+        combinedWarning = data.warning;
+      }
+      if (data.metrics && Object.keys(data.metrics).length > 0) {
+        combinedMetrics = data.metrics;
+      }
+      if (Array.isArray(data.figures) && data.figures.length > 0) {
+        allFigures.push(...data.figures);
+      }
     }
-    const data = await res.json();
+
+    const data = {
+      figures: allFigures,
+      metrics: combinedMetrics,
+      warning: combinedWarning,
+    };
     if (showOverlay) {
       setLoadingState(82, "Rendering charts...");
     }

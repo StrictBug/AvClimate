@@ -1,9 +1,11 @@
 import base64
 import glob
 import json
+import logging
 import math
 import os
 import re
+import time
 from functools import lru_cache
 from io import BytesIO
 from typing import Any
@@ -35,6 +37,18 @@ DATA_FILE = os.path.join(ROOT_DIR, "TAF3.parquet")
 SPLIT_DATA_DIR = os.path.join(ROOT_DIR, "data", "by_icao")
 CLIMATE_FILE = os.path.join(ROOT_DIR, "climatedrivers.csv")
 LIGHTNING_SPLIT_DIR = os.path.join(ROOT_DIR, "data", "lightning_by_icao")
+Y_CEILINGS_FILE = os.path.join(ROOT_DIR, "statistics", "y_ceilings_by_icao.json")
+OVERVIEW_FOG_MONTHLY_FILE = os.path.join(ROOT_DIR, "statistics", "overview_fog_monthly_by_icao.json")
+OVERVIEW_RAIN_THUNDER_MONTHLY_FILE = os.path.join(ROOT_DIR, "statistics", "overview_rain_thunder_monthly_by_icao.json")
+OVERVIEW_WIND_ROSE_FILE = os.path.join(ROOT_DIR, "statistics", "overview_wind_rose_by_icao.json")
+OVERVIEW_TEMP_DEWPOINT_FILE = os.path.join(ROOT_DIR, "statistics", "overview_temp_dewpoint_by_icao.json")
+PRECOMPUTED_DIR = os.path.join(ROOT_DIR, "statistics", "precomputed")
+Y_CEILINGS_DIR = os.path.join(PRECOMPUTED_DIR, "y_ceilings")
+OVERVIEW_FOG_MONTHLY_DIR = os.path.join(PRECOMPUTED_DIR, "overview_fog_monthly")
+OVERVIEW_RAIN_THUNDER_MONTHLY_DIR = os.path.join(PRECOMPUTED_DIR, "overview_rain_thunder_monthly")
+OVERVIEW_WIND_ROSE_DIR = os.path.join(PRECOMPUTED_DIR, "overview_wind_rose")
+OVERVIEW_TEMP_DEWPOINT_DIR = os.path.join(PRECOMPUTED_DIR, "overview_temp_dewpoint")
+PRECIPITATION_PRECOMPUTED_DIR = os.path.join(PRECOMPUTED_DIR, "precipitation")
 LIGHTNING_RADIUS_KM = 8.0
 LIGHTNING_WINDOW_MINUTES = 10
 LIGHTNING_COVERAGE_START_UTC = pd.Timestamp("2008-02-25T00:00:00Z")
@@ -112,6 +126,20 @@ SECTION_CEILING_KEYS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+FIGURE_CEILING_KEYS: dict[str, tuple[str, ...]] = {
+    "rain_thunder": ("rain_thunder",),
+    "temp_dewpoint": ("temp_dewpoint_y1_min", "temp_dewpoint_y1_max", "temp_dewpoint_y2"),
+    "fog_low_cloud": ("fog_low_cloud",),
+    "gale_weather_split": ("gale_weather_split",),
+    "monthly_precip": ("monthly_precip",),
+    "monthly_fog": ("monthly_fog",),
+    "fog_share": ("fog_share",),
+    "fog_cloud_joint": ("fog_cloud_joint_min", "fog_cloud_joint_max"),
+    "monthly_smoke": ("monthly_smoke",),
+    "hourly_smoke": ("hourly_smoke",),
+    "scatter_wind_dewpt": ("scatter_wind_dewpt",),
+}
+
 CEILING_COLUMNS_BY_GROUP: dict[str, tuple[str, ...]] = {
     "rain": (
         "year", "month", "TM_FULL", "PRCP_FM_09",
@@ -147,6 +175,18 @@ def ceiling_keys_for_section(section: str) -> tuple[str, ...]:
     return SECTION_CEILING_KEYS.get(section, SECTION_CEILING_KEYS["overview"])
 
 
+def ceiling_keys_for_figures(section: str, figure_ids: set[str]) -> tuple[str, ...]:
+    if not figure_ids:
+        return ceiling_keys_for_section(section)
+
+    keys: set[str] = set()
+    for fig_id in figure_ids:
+        keys.update(FIGURE_CEILING_KEYS.get(fig_id, ()))
+    if not keys:
+        return tuple()
+    return tuple(sorted(keys))
+
+
 def columns_for_ceiling_keys(keys: set[str]) -> tuple[str, ...]:
     cols: set[str] = set()
     if keys & {"rain_thunder", "monthly_precip"}:
@@ -161,8 +201,400 @@ def columns_for_ceiling_keys(keys: set[str]) -> tuple[str, ...]:
         cols.update(CEILING_COLUMNS_BY_GROUP["smoke"])
     return tuple(sorted(cols))
 
-COORDS_DF = pd.read_csv(COORD_FILE).set_index("ICAO")
-TZ_FINDER = TimezoneFinder(in_memory=True)
+LOG = logging.getLogger("uvicorn.error")
+
+
+def current_rss_mb() -> float | None:
+    try:
+        with open("/proc/self/status", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except Exception:
+        return None
+    return None
+
+
+def log_memory_phase(phase: str, **fields: Any) -> None:
+    rss = current_rss_mb()
+    parts = [f"phase={phase}"]
+    if rss is not None:
+        parts.append(f"rss_mb={rss:.1f}")
+    for key, value in fields.items():
+        parts.append(f"{key}={value}")
+    LOG.info("[mem] " + " ".join(parts))
+
+
+def configured_memory_guard_mb() -> float:
+    raw = os.getenv("CHARTS_MEMORY_GUARD_MB", "0").strip()
+    if not raw:
+        return 0.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.0
+    return value if value > 0 else 0.0
+
+
+@lru_cache(maxsize=1)
+def get_coords_df() -> pd.DataFrame:
+    return pd.read_csv(COORD_FILE).set_index("ICAO")
+
+
+class LazyCoords:
+    @property
+    def index(self) -> pd.Index:
+        return get_coords_df().index
+
+    @property
+    def loc(self) -> Any:
+        return get_coords_df().loc
+
+
+COORDS_DF = LazyCoords()
+
+
+@lru_cache(maxsize=1)
+def get_tz_finder() -> TimezoneFinder:
+    # Defer timezone dataset load until first timezone-dependent chart path.
+    return TimezoneFinder(in_memory=True)
+
+
+def precomputed_airport_file(directory: str, icao: str) -> str:
+    return os.path.join(directory, f"{icao}.json")
+
+
+def read_json_file(path: str) -> Any | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
+@lru_cache(maxsize=1)
+def load_precomputed_y_ceilings_legacy() -> dict[str, dict[str, float]]:
+    raw = read_json_file(Y_CEILINGS_FILE)
+    if not isinstance(raw, dict):
+        return {}
+
+    data: dict[str, dict[str, float]] = {}
+    for icao, values in raw.items():
+        if not isinstance(icao, str) or not isinstance(values, dict):
+            continue
+        parsed: dict[str, float] = {}
+        for key, value in values.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                parsed[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+        if parsed:
+            data[icao] = parsed
+    return data
+
+
+@lru_cache(maxsize=1024)
+def load_precomputed_y_ceilings_for_airport(icao: str) -> dict[str, float]:
+    raw = read_json_file(precomputed_airport_file(Y_CEILINGS_DIR, icao))
+    if isinstance(raw, dict):
+        parsed: dict[str, float] = {}
+        for key, value in raw.items():
+            if not isinstance(key, str):
+                continue
+            try:
+                parsed[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+        if parsed:
+            return parsed
+    return load_precomputed_y_ceilings_legacy().get(icao, {})
+
+
+def precomputed_ceilings_for_airport(icao: str, needed: set[str]) -> tuple[dict[str, float], set[str]]:
+    airport_values = load_precomputed_y_ceilings_for_airport(icao)
+    if not airport_values:
+        return {}, set(needed)
+
+    resolved: dict[str, float] = {}
+    missing = set(needed)
+    for key in tuple(missing):
+        if key in airport_values:
+            resolved[key] = float(airport_values[key])
+            missing.discard(key)
+    return resolved, missing
+
+
+def _parse_fog_mode_map(mode_map: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(mode_map, dict):
+        return {}
+    parsed_modes: dict[str, list[dict[str, Any]]] = {}
+    for mode, rows in mode_map.items():
+        if not isinstance(mode, str) or not isinstance(rows, list):
+            continue
+        parsed_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                parsed_rows.append({
+                    "bom_year": int(row.get("bom_year")),
+                    "bom_month": int(row.get("bom_month")),
+                    "enso_norm": str(row.get("enso_norm", "all")).strip().lower(),
+                    "iod_norm": str(row.get("iod_norm", "all")).strip().lower(),
+                    "sam_norm": str(row.get("sam_norm", "all")).strip().lower(),
+                    "mjo_norm": str(row.get("mjo_norm", "all")).strip().lower(),
+                    "Fog": float(row.get("Fog", 0.0)),
+                    "below 2000ft": float(row.get("below 2000ft", 0.0)),
+                    "below 1500ft": float(row.get("below 1500ft", 0.0)),
+                    "below 1000ft": float(row.get("below 1000ft", 0.0)),
+                    "below 500ft": float(row.get("below 500ft", 0.0)),
+                })
+            except (TypeError, ValueError):
+                continue
+        if parsed_rows:
+            parsed_modes[mode] = parsed_rows
+    return parsed_modes
+
+
+@lru_cache(maxsize=1)
+def load_precomputed_overview_fog_monthly_legacy() -> dict[str, dict[str, list[dict[str, Any]]]]:
+    raw = read_json_file(OVERVIEW_FOG_MONTHLY_FILE)
+    if not isinstance(raw, dict):
+        return {}
+    data: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for icao, mode_map in raw.items():
+        if not isinstance(icao, str):
+            continue
+        parsed = _parse_fog_mode_map(mode_map)
+        if parsed:
+            data[icao] = parsed
+    return data
+
+
+@lru_cache(maxsize=1024)
+def load_precomputed_overview_fog_monthly_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
+    raw = read_json_file(precomputed_airport_file(OVERVIEW_FOG_MONTHLY_DIR, icao))
+    parsed = _parse_fog_mode_map(raw)
+    if parsed:
+        return parsed
+    return load_precomputed_overview_fog_monthly_legacy().get(icao, {})
+
+
+def _parse_rain_rows(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    parsed_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            parsed_rows.append({
+                "bom_year": int(row.get("bom_year")),
+                "bom_month": int(row.get("bom_month")),
+                "enso_norm": str(row.get("enso_norm", "")).strip().lower(),
+                "iod_norm": str(row.get("iod_norm", "")).strip().lower(),
+                "sam_norm": str(row.get("sam_norm", "")).strip().lower(),
+                "mjo_norm": str(row.get("mjo_norm", "")).strip().lower(),
+                "Rain": float(row.get("Rain", 0.0)),
+                "Thunderstorm": float(row.get("Thunderstorm", 0.0)),
+            })
+        except (TypeError, ValueError):
+            continue
+    return parsed_rows
+
+
+@lru_cache(maxsize=1)
+def load_precomputed_overview_rain_thunder_monthly_legacy() -> dict[str, list[dict[str, Any]]]:
+    raw = read_json_file(OVERVIEW_RAIN_THUNDER_MONTHLY_FILE)
+    if not isinstance(raw, dict):
+        return {}
+
+    data: dict[str, list[dict[str, Any]]] = {}
+    for icao, rows in raw.items():
+        if not isinstance(icao, str):
+            continue
+        parsed = _parse_rain_rows(rows)
+        if parsed:
+            data[icao] = parsed
+    return data
+
+
+@lru_cache(maxsize=1024)
+def load_precomputed_overview_rain_thunder_monthly_for_airport(icao: str) -> list[dict[str, Any]]:
+    raw = read_json_file(precomputed_airport_file(OVERVIEW_RAIN_THUNDER_MONTHLY_DIR, icao))
+    parsed = _parse_rain_rows(raw)
+    if parsed:
+        return parsed
+    return load_precomputed_overview_rain_thunder_monthly_legacy().get(icao, [])
+
+
+def _parse_wind_rows(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    parsed_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            parsed_rows.append({
+                "bom_year": int(row.get("bom_year")),
+                "bom_month": int(row.get("bom_month")),
+                "enso_norm": str(row.get("enso_norm", "all")).strip().lower(),
+                "iod_norm": str(row.get("iod_norm", "all")).strip().lower(),
+                "sam_norm": str(row.get("sam_norm", "all")).strip().lower(),
+                "mjo_norm": str(row.get("mjo_norm", "all")).strip().lower(),
+                "dir_bin": float(row.get("dir_bin", 0.0)),
+                "Speed Range": str(row.get("Speed Range", "")).strip(),
+                "Count": float(row.get("Count", 0.0)),
+            })
+        except (TypeError, ValueError):
+            continue
+    return parsed_rows
+
+
+@lru_cache(maxsize=1)
+def load_precomputed_overview_wind_rose_legacy() -> dict[str, list[dict[str, Any]]]:
+    raw = read_json_file(OVERVIEW_WIND_ROSE_FILE)
+    if not isinstance(raw, dict):
+        return {}
+
+    data: dict[str, list[dict[str, Any]]] = {}
+    for icao, rows in raw.items():
+        if not isinstance(icao, str):
+            continue
+        parsed = _parse_wind_rows(rows)
+        if parsed:
+            data[icao] = parsed
+    return data
+
+
+@lru_cache(maxsize=1024)
+def load_precomputed_overview_wind_rose_for_airport(icao: str) -> list[dict[str, Any]]:
+    raw = read_json_file(precomputed_airport_file(OVERVIEW_WIND_ROSE_DIR, icao))
+    parsed = _parse_wind_rows(raw)
+    if parsed:
+        return parsed
+    return load_precomputed_overview_wind_rose_legacy().get(icao, [])
+
+
+def _parse_temp_rows(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    parsed_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            parsed_rows.append({
+                "bom_year": int(row.get("bom_year")),
+                "bom_month": int(row.get("bom_month")),
+                "enso_norm": str(row.get("enso_norm", "all")).strip().lower(),
+                "iod_norm": str(row.get("iod_norm", "all")).strip().lower(),
+                "sam_norm": str(row.get("sam_norm", "all")).strip().lower(),
+                "mjo_norm": str(row.get("mjo_norm", "all")).strip().lower(),
+                "Avg Daily Max T": float(row.get("Avg Daily Max T", 0.0)),
+                "Avg Daily Min T": float(row.get("Avg Daily Min T", 0.0)),
+                "Avg Daily Max Td": float(row.get("Avg Daily Max Td", 0.0)),
+                "Avg Daily Min Td": float(row.get("Avg Daily Min Td", 0.0)),
+                "monthly_precip_mm": float(row.get("monthly_precip_mm", 0.0)),
+            })
+        except (TypeError, ValueError):
+            continue
+    return parsed_rows
+
+
+@lru_cache(maxsize=1)
+def load_precomputed_overview_temp_dewpoint_legacy() -> dict[str, list[dict[str, Any]]]:
+    raw = read_json_file(OVERVIEW_TEMP_DEWPOINT_FILE)
+    if not isinstance(raw, dict):
+        return {}
+
+    data: dict[str, list[dict[str, Any]]] = {}
+    for icao, rows in raw.items():
+        if not isinstance(icao, str):
+            continue
+        parsed = _parse_temp_rows(rows)
+        if parsed:
+            data[icao] = parsed
+    return data
+
+
+@lru_cache(maxsize=1024)
+def load_precomputed_overview_temp_dewpoint_for_airport(icao: str) -> list[dict[str, Any]]:
+    raw = read_json_file(precomputed_airport_file(OVERVIEW_TEMP_DEWPOINT_DIR, icao))
+    parsed = _parse_temp_rows(raw)
+    if parsed:
+        return parsed
+    return load_precomputed_overview_temp_dewpoint_legacy().get(icao, [])
+
+
+def _parse_precip_monthly_rows(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    parsed: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            parsed.append({
+                "bom_year": int(row.get("bom_year")),
+                "bom_month": int(row.get("bom_month")),
+                "enso_norm": str(row.get("enso_norm", "all")).strip().lower(),
+                "iod_norm": str(row.get("iod_norm", "all")).strip().lower(),
+                "sam_norm": str(row.get("sam_norm", "all")).strip().lower(),
+                "mjo_norm": str(row.get("mjo_norm", "all")).strip().lower(),
+                "Rain": float(row.get("Rain", 0.0)),
+                "Thunderstorm": float(row.get("Thunderstorm", 0.0)),
+            })
+        except (TypeError, ValueError):
+            continue
+    return parsed
+
+
+def _parse_precip_split_rows(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    parsed: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            parsed.append({
+                "year": int(row.get("year")),
+                "month": int(row.get("month")),
+                "enso_norm": str(row.get("enso_norm", "all")).strip().lower(),
+                "iod_norm": str(row.get("iod_norm", "all")).strip().lower(),
+                "sam_norm": str(row.get("sam_norm", "all")).strip().lower(),
+                "mjo_norm": str(row.get("mjo_norm", "all")).strip().lower(),
+                "dir_bin_10": int(row.get("dir_bin_10")),
+                "denom": float(row.get("denom", 0.0)),
+                "lt3": float(row.get("lt3", 0.0)),
+                "lt5": float(row.get("lt5", 0.0)),
+                "lt7": float(row.get("lt7", 0.0)),
+                "lt9": float(row.get("lt9", 0.0)),
+            })
+        except (TypeError, ValueError):
+            continue
+    return parsed
+
+
+@lru_cache(maxsize=1024)
+def load_precomputed_precipitation_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
+    raw = read_json_file(precomputed_airport_file(PRECIPITATION_PRECOMPUTED_DIR, icao))
+    if not isinstance(raw, dict):
+        return {}
+    monthly = _parse_precip_monthly_rows(raw.get("monthly", []))
+    split = _parse_precip_split_rows(raw.get("split", []))
+    data: dict[str, list[dict[str, Any]]] = {}
+    if monthly:
+        data["monthly"] = monthly
+    if split:
+        data["split"] = split
+    return data
 
 
 def split_dataset_available() -> bool:
@@ -559,7 +991,9 @@ def load_climate_driver_df() -> pl.DataFrame:
     return df.with_columns(normalized_exprs)
 
 
-CLIMATE_DF = load_climate_driver_df()
+@lru_cache(maxsize=1)
+def get_climate_df() -> pl.DataFrame:
+    return load_climate_driver_df()
 
 PLOT_HEIGHT = 300
 DEFAULT_LEGEND_ENTRY_WIDTH = 220
@@ -885,15 +1319,13 @@ def average_monthly_gale_weather_counts(
     return monthly_avg
 
 
-def build_fog_low_cloud_frequency_figure(
-    fog_df: pd.DataFrame,
+def build_fog_low_cloud_frequency_from_combined(
+    combined: pd.DataFrame,
     title: str,
-    icao: str,
     month_numbers: list[int],
 ) -> go.Figure:
     month_labels = month_labels_for_numbers(month_numbers)
     month_positions = list(range(1, len(month_numbers) + 1))
-    combined = average_monthly_fog_low_cloud_days(fog_df, icao)
 
     threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
     combined_sorted = combined.copy()
@@ -996,6 +1428,648 @@ def build_fog_low_cloud_frequency_figure(
         bgcolor="rgba(255,255,255,0.92)",
     )
     return fig
+
+
+def build_fog_low_cloud_frequency_figure(
+    fog_df: pd.DataFrame,
+    title: str,
+    icao: str,
+    month_numbers: list[int],
+) -> go.Figure:
+    combined = average_monthly_fog_low_cloud_days(fog_df, icao)
+    return build_fog_low_cloud_frequency_from_combined(combined, title, month_numbers)
+
+
+def build_overview_fog_figure_from_precomputed(
+    icao: str,
+    *,
+    fog_mode: str,
+    title: str,
+    month_numbers: list[int],
+    season: str,
+    year_start: int,
+    year_end: int,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+) -> go.Figure | None:
+    mode_rows = load_precomputed_overview_fog_monthly_for_airport(icao).get(fog_mode, [])
+    if not mode_rows:
+        return None
+
+    monthly_counts = pd.DataFrame(mode_rows)
+    if monthly_counts.empty:
+        return None
+
+    season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+    selected_months = [m for m in month_numbers if m in season_months]
+    if not selected_months:
+        return None
+
+    monthly_counts = monthly_counts[
+        (monthly_counts["bom_year"] >= year_start)
+        & (monthly_counts["bom_year"] <= year_end)
+        & (monthly_counts["bom_month"].isin(selected_months))
+    ].copy()
+    if monthly_counts.empty:
+        return None
+
+    selected = {
+        "enso_norm": normalize_driver_selection(enso),
+        "iod_norm": normalize_driver_selection(iod),
+        "sam_norm": normalize_driver_selection(sam),
+        "mjo_norm": normalize_driver_selection(mjo),
+    }
+    if all(value == "all" for value in selected.values()):
+        all_rows = monthly_counts[
+            (monthly_counts["enso_norm"] == "all")
+            & (monthly_counts["iod_norm"] == "all")
+            & (monthly_counts["sam_norm"] == "all")
+            & (monthly_counts["mjo_norm"] == "all")
+        ]
+        if not all_rows.empty:
+            monthly_counts = all_rows
+    else:
+        for col_name, value in selected.items():
+            if value != "all":
+                monthly_counts = monthly_counts[monthly_counts[col_name] == value]
+    if monthly_counts.empty:
+        return None
+
+    monthly_counts = (
+        monthly_counts.groupby(["bom_year", "bom_month"], as_index=False)[
+            ["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]
+        ]
+        .sum()
+    )
+    if monthly_counts.empty:
+        return None
+
+    monthly_avg = (
+        monthly_counts.groupby("bom_month", as_index=False)[["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]]
+        .mean()
+        .rename(columns={"bom_month": "month"})
+    )
+    monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+
+    fog_monthly = monthly_avg[["Month", "Fog"]].rename(columns={"Fog": "Count"})
+    fog_monthly["Type"] = "Fog"
+    fog_monthly["Threshold"] = None
+
+    low_cloud_monthly = monthly_avg.melt(
+        id_vars=["month", "Month"],
+        value_vars=["below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"],
+        var_name="Threshold",
+        value_name="Count",
+    )
+    low_cloud_monthly["Type"] = "Low cloud"
+
+    combined = pd.concat(
+        [
+            fog_monthly[["Month", "Count", "Type", "Threshold"]],
+            low_cloud_monthly[["Month", "Count", "Type", "Threshold"]],
+        ],
+        ignore_index=True,
+    )
+
+    if combined.empty:
+        return None
+
+    return build_fog_low_cloud_frequency_from_combined(combined, title, month_numbers)
+
+
+def build_overview_rain_thunder_figure_from_precomputed(
+    icao: str,
+    *,
+    month_numbers: list[int],
+    season: str,
+    year_start: int,
+    year_end: int,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+) -> go.Figure | None:
+    rows = load_precomputed_overview_rain_thunder_monthly_for_airport(icao)
+    if not rows:
+        return None
+
+    monthly_counts = pd.DataFrame(rows)
+    if monthly_counts.empty:
+        return None
+
+    season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+    selected_months = [m for m in month_numbers if m in season_months]
+    if not selected_months:
+        return None
+
+    monthly_counts = monthly_counts[
+        (monthly_counts["bom_year"] >= year_start)
+        & (monthly_counts["bom_year"] <= year_end)
+        & (monthly_counts["bom_month"].isin(selected_months))
+    ].copy()
+    if monthly_counts.empty:
+        return None
+
+    selected = {
+        "enso_norm": normalize_driver_selection(enso),
+        "iod_norm": normalize_driver_selection(iod),
+        "sam_norm": normalize_driver_selection(sam),
+        "mjo_norm": normalize_driver_selection(mjo),
+    }
+    if all(value == "all" for value in selected.values()):
+        # Prefer explicit all-days aggregates so overview matches precipitation-tab values.
+        all_rows = monthly_counts[
+            (monthly_counts["enso_norm"] == "all")
+            & (monthly_counts["iod_norm"] == "all")
+            & (monthly_counts["sam_norm"] == "all")
+            & (monthly_counts["mjo_norm"] == "all")
+        ]
+        if not all_rows.empty:
+            monthly_counts = all_rows
+    else:
+        for col_name, value in selected.items():
+            if value != "all":
+                monthly_counts = monthly_counts[monthly_counts[col_name] == value]
+    if monthly_counts.empty:
+        return None
+
+    # Match live precipitation-tab behavior: compute monthly totals per year first,
+    # then average those year-level totals by month.
+    monthly_counts = (
+        monthly_counts.groupby(["bom_year", "bom_month"], as_index=False)[["Rain", "Thunderstorm"]]
+        .sum()
+    )
+    if monthly_counts.empty:
+        return None
+
+    rain_avg_m = (
+        monthly_counts.groupby("bom_month", as_index=False)["Rain"]
+        .mean()
+        .rename(columns={"bom_month": "month"})
+    )
+    ts_avg_m = (
+        monthly_counts[monthly_counts["bom_year"] >= LIGHTNING_STATS_MIN_YEAR]
+        .groupby("bom_month", as_index=False)["Thunderstorm"]
+        .mean()
+        .rename(columns={"bom_month": "month"})
+    )
+
+    monthly_avg = rain_avg_m.merge(ts_avg_m, on="month", how="left")
+    monthly_avg["Thunderstorm"] = monthly_avg["Thunderstorm"].fillna(0.0)
+    if monthly_avg.empty:
+        return None
+
+    month_name_order = month_labels_for_numbers(month_numbers)
+    monthly_avg = monthly_avg[monthly_avg["month"].isin(month_numbers)].copy()
+    monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+    monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=month_name_order, ordered=True)
+    monthly_avg = monthly_avg.sort_values("Month")
+
+    rain_avg = monthly_avg.melt(
+        id_vars=["month", "Month"],
+        value_vars=["Rain", "Thunderstorm"],
+        var_name="Type",
+        value_name="Count",
+    )
+    rain_avg["Type"] = rain_avg["Type"].replace({"Thunderstorm": THUNDERSTORM_LEGEND_LABEL})
+
+    fig_rain = px.bar(
+        rain_avg,
+        x="Month",
+        y="Count",
+        color="Type",
+        barmode="group",
+        color_discrete_map={"Rain": "#2159d1", THUNDERSTORM_LEGEND_LABEL: "#c62828"},
+        labels={"Count": "Avg Days/Month", "Type": "Category"},
+        title="Rain/Thunderstorm Days",
+        category_orders={"Month": month_name_order, "Type": ["Rain", THUNDERSTORM_LEGEND_LABEL]},
+    )
+    fig_rain.update_xaxes(title_text="")
+    return fig_rain
+
+
+def build_overview_wind_rose_figure_from_precomputed(
+    icao: str,
+    *,
+    month_numbers: list[int],
+    season: str,
+    year_start: int,
+    year_end: int,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+) -> go.Figure | None:
+    rows = load_precomputed_overview_wind_rose_for_airport(icao)
+    if not rows:
+        return None
+
+    rose_data = pd.DataFrame(rows)
+    if rose_data.empty:
+        return None
+
+    season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+    selected_months = [m for m in month_numbers if m in season_months]
+    if not selected_months:
+        return None
+
+    rose_data = rose_data[
+        (rose_data["bom_year"] >= year_start)
+        & (rose_data["bom_year"] <= year_end)
+        & (rose_data["bom_month"].isin(selected_months))
+    ].copy()
+    if rose_data.empty:
+        return None
+
+    selected = {
+        "enso_norm": normalize_driver_selection(enso),
+        "iod_norm": normalize_driver_selection(iod),
+        "sam_norm": normalize_driver_selection(sam),
+        "mjo_norm": normalize_driver_selection(mjo),
+    }
+    if all(value == "all" for value in selected.values()):
+        all_rows = rose_data[
+            (rose_data["enso_norm"] == "all")
+            & (rose_data["iod_norm"] == "all")
+            & (rose_data["sam_norm"] == "all")
+            & (rose_data["mjo_norm"] == "all")
+        ]
+        if not all_rows.empty:
+            rose_data = all_rows
+    else:
+        for col_name, value in selected.items():
+            if value != "all":
+                rose_data = rose_data[rose_data[col_name] == value]
+    if rose_data.empty:
+        return None
+
+    rose_data = (
+        rose_data.groupby(["dir_bin", "Speed Range"], as_index=False)["Count"]
+        .sum()
+        .rename(columns={"Count": "Frequency"})
+    )
+    if rose_data.empty:
+        return None
+
+    total_obs = float(rose_data["Frequency"].sum()) if not rose_data.empty else 0.0
+    rose_data["Frequency"] = (rose_data["Frequency"] / total_obs * 100.0) if total_obs > 0 else 0.0
+
+    fig_rose = px.bar_polar(
+        rose_data,
+        r="Frequency",
+        theta="dir_bin",
+        color="Speed Range",
+        color_discrete_sequence=px.colors.sequential.Turbo,
+        title="Wind Rose",
+        category_orders={"Speed Range": ["0-1 kt", "1-5 kt", "5-10 kt", "10-15 kt", "15-22 kt", "22+ kt"]},
+    )
+    fig_rose.update_traces(hovertemplate="Direction: %{theta}<br>Speed: %{fullData.name}<br>Frequency: %{r:.2f}%<extra></extra>")
+
+    bg_img_base64 = None
+    try:
+        airport_lat = COORDS_DF.loc[icao, "LAT"]
+        airport_lon = COORDS_DF.loc[icao, "LONG"]
+        bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+    except Exception:
+        pass
+
+    fig_rose.update_layout(
+        legend=dict(bgcolor="rgba(255,255,255,0.88)", bordercolor="#c7d4ef", borderwidth=1),
+        polar=dict(bgcolor="rgba(0,0,0,0)", angularaxis=dict(direction="clockwise", period=360)),
+    )
+    apply_wind_rose_style(fig_rose)
+    if bg_img_base64:
+        apply_polar_background(fig_rose, bg_img_base64)
+    return fig_rose
+
+
+def build_overview_temp_dewpoint_figure_from_precomputed(
+    icao: str,
+    *,
+    month_numbers: list[int],
+    season: str,
+    year_start: int,
+    year_end: int,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+) -> go.Figure | None:
+    rows = load_precomputed_overview_temp_dewpoint_for_airport(icao)
+    if not rows:
+        return None
+
+    temp_data = pd.DataFrame(rows)
+    if temp_data.empty:
+        return None
+
+    season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+    selected_months = [m for m in month_numbers if m in season_months]
+    if not selected_months:
+        return None
+
+    temp_data = temp_data[
+        (temp_data["bom_year"] >= year_start)
+        & (temp_data["bom_year"] <= year_end)
+        & (temp_data["bom_month"].isin(selected_months))
+    ].copy()
+    if temp_data.empty:
+        return None
+
+    selected = {
+        "enso_norm": normalize_driver_selection(enso),
+        "iod_norm": normalize_driver_selection(iod),
+        "sam_norm": normalize_driver_selection(sam),
+        "mjo_norm": normalize_driver_selection(mjo),
+    }
+    if all(value == "all" for value in selected.values()):
+        all_rows = temp_data[
+            (temp_data["enso_norm"] == "all")
+            & (temp_data["iod_norm"] == "all")
+            & (temp_data["sam_norm"] == "all")
+            & (temp_data["mjo_norm"] == "all")
+        ]
+        if not all_rows.empty:
+            temp_data = all_rows
+    else:
+        for col_name, value in selected.items():
+            if value != "all":
+                temp_data = temp_data[temp_data[col_name] == value]
+    if temp_data.empty:
+        return None
+
+    temp_avg = (
+        temp_data.groupby("bom_month", as_index=False)[
+            ["Avg Daily Max T", "Avg Daily Min T", "Avg Daily Max Td", "Avg Daily Min Td"]
+        ]
+        .mean()
+        .rename(columns={"bom_month": "month"})
+    )
+    if temp_avg.empty:
+        return None
+
+    monthly_precip_avg = (
+        temp_data.groupby("bom_month", as_index=False)["monthly_precip_mm"]
+        .mean()
+        .rename(columns={"bom_month": "month", "monthly_precip_mm": "Avg Monthly Precip"})
+    )
+
+    month_name_order = month_labels_for_numbers(month_numbers)
+    temp_avg = temp_avg[temp_avg["month"].isin(month_numbers)].copy()
+    temp_avg["Month"] = temp_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+    temp_avg["Month"] = pd.Categorical(temp_avg["Month"], categories=month_name_order, ordered=True)
+    temp_avg = temp_avg.sort_values("Month")
+
+    fig_temp = go.Figure()
+    if not monthly_precip_avg.empty:
+        monthly_precip_avg = monthly_precip_avg[monthly_precip_avg["month"].isin(month_numbers)].copy()
+        monthly_precip_avg["Month"] = monthly_precip_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+        precip_by_month = (
+            monthly_precip_avg.set_index("Month")["Avg Monthly Precip"]
+            .reindex(month_name_order)
+            .fillna(0.0)
+        )
+        fig_temp.add_bar(
+            x=month_name_order,
+            y=precip_by_month.astype(float).tolist(),
+            name="Avg Monthly Precip",
+            yaxis="y2",
+            marker_color="#1565c0",
+            marker_line_color="#0d47a1",
+            marker_line_width=1,
+            opacity=0.6,
+            zorder=0,
+            hovertemplate="Month: %{x}<br>Avg Monthly Precip: %{y:.1f} mm<extra></extra>",
+        )
+
+    temp_trace_styles = {
+        "Avg Daily Max T": {"color": "#d32f2f", "visible": True},
+        "Avg Daily Min T": {"color": "#ef9a9a", "visible": True},
+        "Avg Daily Max Td": {"color": "#0b3d91", "visible": "legendonly"},
+        "Avg Daily Min Td": {"color": "#90caf9", "visible": "legendonly"},
+    }
+    for trace_name, style in temp_trace_styles.items():
+        fig_temp.add_trace(go.Scatter(
+            x=temp_avg["Month"],
+            y=temp_avg[trace_name],
+            mode="lines+markers",
+            name=trace_name,
+            line=dict(color=style["color"], width=2.5),
+            marker=dict(color=style["color"], size=7),
+            visible=style["visible"],
+            zorder=2,
+            hovertemplate=f"Month: %{{x}}<br>{trace_name}: %{{y:.1f}} °C<extra></extra>",
+        ))
+
+    fig_temp.update_xaxes(title_text="")
+    fig_temp.update_yaxes(title_text="Temperature / Dewpoint (°C)")
+    fig_temp.update_layout(
+        title="Temperature, Dewpoint & Precipitation",
+        yaxis2=dict(
+            title="Avg Monthly Precipitation (mm)",
+            overlaying="y",
+            side="right",
+            rangemode="tozero",
+            showgrid=False,
+        ),
+        bargap=0.22,
+    )
+    return fig_temp
+
+
+def build_precipitation_figures_from_precomputed(
+    icao: str,
+    *,
+    month_numbers: list[int],
+    season: str,
+    year_start: int,
+    year_end: int,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+) -> tuple[go.Figure, go.Figure] | None:
+    payload = load_precomputed_precipitation_for_airport(icao)
+    monthly_rows = payload.get("monthly", [])
+    split_rows = payload.get("split", [])
+    if not monthly_rows or not split_rows:
+        return None
+
+    season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+    selected_months = [m for m in month_numbers if m in season_months]
+    if not selected_months:
+        return None
+
+    selected = {
+        "enso_norm": normalize_driver_selection(enso),
+        "iod_norm": normalize_driver_selection(iod),
+        "sam_norm": normalize_driver_selection(sam),
+        "mjo_norm": normalize_driver_selection(mjo),
+    }
+
+    monthly_df = pd.DataFrame(monthly_rows)
+    monthly_df = monthly_df[
+        (monthly_df["bom_year"] >= year_start)
+        & (monthly_df["bom_year"] <= year_end)
+        & (monthly_df["bom_month"].isin(selected_months))
+    ].copy()
+    if monthly_df.empty:
+        return None
+
+    if all(value == "all" for value in selected.values()):
+        all_rows = monthly_df[
+            (monthly_df["enso_norm"] == "all")
+            & (monthly_df["iod_norm"] == "all")
+            & (monthly_df["sam_norm"] == "all")
+            & (monthly_df["mjo_norm"] == "all")
+        ]
+        if not all_rows.empty:
+            monthly_df = all_rows
+    else:
+        for col_name, value in selected.items():
+            if value != "all":
+                monthly_df = monthly_df[monthly_df[col_name] == value]
+    if monthly_df.empty:
+        return None
+
+    monthly_df = (
+        monthly_df.groupby(["bom_year", "bom_month"], as_index=False)[["Rain", "Thunderstorm"]]
+        .sum()
+    )
+    rain_avg_m = (
+        monthly_df.groupby("bom_month", as_index=False)["Rain"]
+        .mean()
+        .rename(columns={"bom_month": "month"})
+    )
+    ts_avg_m = (
+        monthly_df[monthly_df["bom_year"] >= LIGHTNING_STATS_MIN_YEAR]
+        .groupby("bom_month", as_index=False)["Thunderstorm"]
+        .mean()
+        .rename(columns={"bom_month": "month"})
+    )
+    monthly_avg = rain_avg_m.merge(ts_avg_m, on="month", how="left")
+    monthly_avg["Thunderstorm"] = monthly_avg["Thunderstorm"].fillna(0.0)
+    monthly_avg = monthly_avg[monthly_avg["month"].isin(month_numbers)].copy()
+    if monthly_avg.empty:
+        return None
+
+    month_name_order = month_labels_for_numbers(month_numbers)
+    monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+    monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=month_name_order, ordered=True)
+    monthly_avg = monthly_avg.sort_values("Month")
+    monthly_precip = monthly_avg.melt(
+        id_vars=["month", "Month"],
+        value_vars=["Rain", "Thunderstorm"],
+        var_name="Type",
+        value_name="Count",
+    )
+    monthly_precip["Type"] = monthly_precip["Type"].replace({"Thunderstorm": THUNDERSTORM_LEGEND_LABEL})
+    fig_precip = px.bar(
+        monthly_precip,
+        x="Month",
+        y="Count",
+        color="Type",
+        barmode="group",
+        color_discrete_map={"Rain": "#2159d1", THUNDERSTORM_LEGEND_LABEL: "#c62828"},
+        labels={"Count": "Avg Days/Month", "Type": "Category"},
+        title="Monthly Rain/Thunderstorm Days",
+        category_orders={"Month": month_name_order, "Type": ["Rain", THUNDERSTORM_LEGEND_LABEL]},
+    )
+    fig_precip.update_xaxes(title_text="")
+
+    split_df = pd.DataFrame(split_rows)
+    split_df = split_df[
+        (split_df["year"] >= year_start)
+        & (split_df["year"] <= year_end)
+        & (split_df["month"].isin(selected_months))
+    ].copy()
+    if split_df.empty:
+        return None
+
+    if all(value == "all" for value in selected.values()):
+        all_rows = split_df[
+            (split_df["enso_norm"] == "all")
+            & (split_df["iod_norm"] == "all")
+            & (split_df["sam_norm"] == "all")
+            & (split_df["mjo_norm"] == "all")
+        ]
+        if not all_rows.empty:
+            split_df = all_rows
+    else:
+        for col_name, value in selected.items():
+            if value != "all":
+                split_df = split_df[split_df[col_name] == value]
+    if split_df.empty:
+        return None
+
+    agg = (
+        split_df.groupby("dir_bin_10", as_index=False)[["denom", "lt3", "lt5", "lt7", "lt9"]]
+        .sum()
+    )
+    dir_bins_10 = list(range(0, 360, 10))
+    agg = agg.set_index("dir_bin_10")
+    denom = agg["denom"].to_dict()
+
+    def probs_for(col: str) -> list[float]:
+        numer = agg[col].to_dict()
+        return [
+            (float(numer.get(d, 0.0)) / float(denom.get(d, 0.0)) * 100.0) if float(denom.get(d, 0.0)) > 0 else 0.0
+            for d in dir_bins_10
+        ]
+
+    labels = ["<3 km", "<5 km", "<7 km", "<9 km"]
+    line_colors = ["#30123b", "#4145ab", "#4675ed", "#39a2fc"]
+    fill_colors = [
+        "rgba(48,18,59,0.15)",
+        "rgba(65,69,171,0.15)",
+        "rgba(70,117,237,0.15)",
+        "rgba(57,162,252,0.15)",
+    ]
+    prob_arrays = [probs_for("lt3"), probs_for("lt5"), probs_for("lt7"), probs_for("lt9")]
+
+    fig_split = go.Figure()
+    for i, (label, lc, fc, probs) in enumerate(zip(labels, line_colors, fill_colors, prob_arrays)):
+        r_vals = probs + [probs[0]]
+        theta_vals = [float(d) for d in dir_bins_10] + [0.0]
+        fig_split.add_trace(go.Scatterpolar(
+            r=r_vals,
+            theta=theta_vals,
+            mode="lines",
+            fill="toself" if i == 0 else "tonext",
+            fillcolor=fc,
+            line=dict(color=lc, width=2),
+            name=label,
+            legendrank=len(labels) - i,
+            hoveron="points+fills",
+            hovertemplate=(
+                f"<b>{label}</b><br>"
+                "Direction: %{theta}<br>"
+                "P(VSBY &lt; threshold | precip): %{r:.1f}%"
+                "<extra></extra>"
+            ),
+        ))
+
+    bg_img_base64 = None
+    try:
+        airport_lat = COORDS_DF.loc[icao, "LAT"]
+        airport_lon = COORDS_DF.loc[icao, "LONG"]
+        bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+    except Exception:
+        pass
+
+    fig_split.update_layout(
+        title="Conditional P(VSBY < threshold | Precipitation) by Direction",
+        polar=dict(
+            bgcolor="rgba(0,0,0,0)",
+            angularaxis=dict(direction="clockwise", rotation=90),
+            radialaxis=dict(ticksuffix="%"),
+        ),
+    )
+    if bg_img_base64:
+        apply_polar_background(fig_split, bg_img_base64)
+    return fig_precip, fig_split
 
 
 def build_placeholder_figure(title: str, _subtitle: str = NO_DATA_MESSAGE) -> go.Figure:
@@ -1246,7 +2320,7 @@ def airport_timezone(icao: str) -> str:
     if icao in COORDS_DF.index:
         lat = float(COORDS_DF.loc[icao, "LAT"])
         lon = float(COORDS_DF.loc[icao, "LONG"])
-        tz_name = TZ_FINDER.timezone_at(lat=lat, lng=lon)
+        tz_name = get_tz_finder().timezone_at(lat=lat, lng=lon)
         if tz_name:
             return tz_name
     return "UTC"
@@ -1370,6 +2444,7 @@ def apply_climate_driver_filters(
     sam: str,
     mjo: str,
 ) -> pl.DataFrame:
+    climate_df = get_climate_df()
     selected = {
         "enso": normalize_driver_selection(enso),
         "iod": normalize_driver_selection(iod),
@@ -1381,12 +2456,12 @@ def apply_climate_driver_filters(
     if not selected:
         return df
 
-    if CLIMATE_DF.is_empty():
+    if climate_df.is_empty():
         return df.head(0)
 
     joined = (
         df.with_columns(pl.col("TM_FULL").dt.day().cast(pl.Int32).alias("day"))
-        .join(CLIMATE_DF, on=["year", "month", "day"], how="inner")
+        .join(climate_df, on=["year", "month", "day"], how="inner")
     )
 
     for driver, value in selected.items():
@@ -1623,7 +2698,11 @@ def _floor_with_padding(value: float, span: float, pct: float = 0.08) -> float:
 
 
 @lru_cache(maxsize=8)
-def compute_airport_y_ceilings(icao: str, needed_keys: tuple[str, ...] | None = None) -> dict[str, float]:
+def compute_airport_y_ceilings(
+    icao: str,
+    needed_keys: tuple[str, ...] | None = None,
+    use_precomputed: bool = True,
+) -> dict[str, float]:
     """
     Compute y-axis ceilings from the full, unfiltered airport dataset so that
     non-polar charts maintain a stable scale regardless of active filters.
@@ -1638,11 +2717,17 @@ def compute_airport_y_ceilings(icao: str, needed_keys: tuple[str, ...] | None = 
             "fog_share", "monthly_smoke", "hourly_smoke", "scatter_wind_dewpt",
         }
 
+    ceilings: dict[str, float] = {}
+    if use_precomputed:
+        precomputed, missing = precomputed_ceilings_for_airport(icao, needed)
+        ceilings.update(precomputed)
+        if not missing:
+            return ceilings
+        needed = missing
+
     full_df = load_airport_df(icao, columns_for_ceiling_keys(needed))
     if full_df.is_empty():
-        return {}
-
-    ceilings: dict[str, float] = {}
+        return ceilings
 
     # ---------- rain_thunder / monthly_precip --------------------------------
     if needed & {"rain_thunder", "monthly_precip"}:
@@ -1888,21 +2973,343 @@ def charts(
     hourEnd: int = Query(23),
     invertMonth: bool = Query(False),
     invertHour: bool = Query(False),
+    figureIds: str | None = Query(None),
+    includeMetrics: bool = Query(True),
 ) -> dict[str, Any]:
+    started = time.perf_counter()
+    log_memory_phase("charts.start", section=section, icao=icao)
+
     if monthStart not in MONTH_TO_NUM or monthEnd not in MONTH_TO_NUM:
+        log_memory_phase("charts.invalid_month", section=section, icao=icao)
         return {"error": "Invalid month range."}
     if season not in SEASON_TO_MONTHS:
+        log_memory_phase("charts.invalid_season", section=section, icao=icao)
         return {"error": "Invalid season."}
 
     month_range = (MONTH_TO_NUM[monthStart], MONTH_TO_NUM[monthEnd])
     month_number_order = selected_month_numbers(month_range[0], month_range[1], invertMonth)
     month_name_order = month_labels_for_numbers(month_number_order)
+    requested_figure_ids = {
+        fid.strip() for fid in (figureIds or "").split(",") if fid.strip()
+    }
+
+    def wants_figure(fig_id: str) -> bool:
+        return not requested_figure_ids or fig_id in requested_figure_ids
+
+    can_use_precomputed_overview_batch = (
+        section == "overview"
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_overview_batch:
+        overview_precomputed_ids = ["wind_rose", "rain_thunder", "temp_dewpoint", "fog_low_cloud"]
+        requested_overview_ids = [fid for fid in overview_precomputed_ids if wants_figure(fid)]
+        if requested_overview_ids:
+            y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+            precomputed_figures: list[dict[str, Any]] = []
+            precomputed_ok = True
+
+            mode_label_map = {
+                "all": "All Days",
+                "rain": "Rain Days",
+                "non_rain": "Non-rain Days",
+            }
+            selected_monthly_label = mode_label_map.get(fogMonthlyMode, "All Days")
+
+            for fig_id in requested_overview_ids:
+                fig_obj: go.Figure | None = None
+                if fig_id == "wind_rose":
+                    fig_obj = build_overview_wind_rose_figure_from_precomputed(
+                        icao,
+                        month_numbers=month_number_order,
+                        season=season,
+                        year_start=yearStart,
+                        year_end=yearEnd,
+                        enso=enso,
+                        iod=iod,
+                        sam=sam,
+                        mjo=mjo,
+                    )
+                    if fig_obj is not None:
+                        apply_common_layout(fig_obj)
+                elif fig_id == "rain_thunder":
+                    fig_obj = build_overview_rain_thunder_figure_from_precomputed(
+                        icao,
+                        month_numbers=month_number_order,
+                        season=season,
+                        year_start=yearStart,
+                        year_end=yearEnd,
+                        enso=enso,
+                        iod=iod,
+                        sam=sam,
+                        mjo=mjo,
+                    )
+                    if fig_obj is not None:
+                        apply_common_layout(fig_obj)
+                        apply_frequency_panel_layout(fig_obj)
+                        if "rain_thunder" in y_ceilings:
+                            fig_obj.update_yaxes(range=[0, float(y_ceilings["rain_thunder"])], autorange=False)
+                elif fig_id == "temp_dewpoint":
+                    fig_obj = build_overview_temp_dewpoint_figure_from_precomputed(
+                        icao,
+                        month_numbers=month_number_order,
+                        season=season,
+                        year_start=yearStart,
+                        year_end=yearEnd,
+                        enso=enso,
+                        iod=iod,
+                        sam=sam,
+                        mjo=mjo,
+                    )
+                    if fig_obj is not None:
+                        apply_common_layout(fig_obj)
+                        apply_frequency_panel_layout(fig_obj)
+                        y1_min = y_ceilings.get("temp_dewpoint_y1_min")
+                        y1_max = y_ceilings.get("temp_dewpoint_y1_max")
+                        y2_max = y_ceilings.get("temp_dewpoint_y2")
+                        if y1_min is not None and y1_max is not None:
+                            fig_obj.update_yaxes(range=[float(y1_min), float(y1_max)], autorange=False)
+                        if y2_max is not None and fig_obj.layout.yaxis2 is not None:
+                            fig_obj.update_layout(yaxis2={**fig_obj.layout.yaxis2.to_plotly_json(), "range": [0, float(y2_max)], "autorange": False})
+                elif fig_id == "fog_low_cloud":
+                    fig_obj = build_overview_fog_figure_from_precomputed(
+                        icao,
+                        fog_mode=fogMonthlyMode,
+                        title=f"Fog/Low Cloud Frequency ({selected_monthly_label})",
+                        month_numbers=month_number_order,
+                        season=season,
+                        year_start=yearStart,
+                        year_end=yearEnd,
+                        enso=enso,
+                        iod=iod,
+                        sam=sam,
+                        mjo=mjo,
+                    )
+                    if fig_obj is not None:
+                        apply_common_layout(fig_obj)
+                        apply_frequency_panel_layout(fig_obj)
+                        if "fog_low_cloud" in y_ceilings:
+                            fig_obj.update_yaxes(range=[0, float(y_ceilings["fog_low_cloud"])], autorange=False)
+
+                if fig_obj is None:
+                    precomputed_ok = False
+                    break
+                precomputed_figures.append(fig_payload(fig_id, fig_obj))
+
+            if precomputed_ok and len(precomputed_figures) == len(requested_overview_ids):
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                log_memory_phase(
+                    "charts.overview_precomputed_batch",
+                    section=section,
+                    icao=icao,
+                    figures=len(precomputed_figures),
+                    elapsed_ms=elapsed_ms,
+                )
+                return {
+                    "section": section,
+                    "figures": precomputed_figures,
+                }
+
+    can_use_precomputed_overview_rain_thunder = (
+        section == "overview"
+        and requested_figure_ids == {"rain_thunder"}
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_overview_rain_thunder:
+        fig_rain = build_overview_rain_thunder_figure_from_precomputed(
+            icao,
+            month_numbers=month_number_order,
+            season=season,
+            year_start=yearStart,
+            year_end=yearEnd,
+            enso=enso,
+            iod=iod,
+            sam=sam,
+            mjo=mjo,
+        )
+        if fig_rain is not None:
+            y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+            apply_common_layout(fig_rain)
+            apply_frequency_panel_layout(fig_rain)
+            if "rain_thunder" in y_ceilings:
+                fig_rain.update_yaxes(range=[0, float(y_ceilings["rain_thunder"])], autorange=False)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log_memory_phase("charts.rain_thunder_precomputed", section=section, icao=icao, elapsed_ms=elapsed_ms)
+            return {
+                "section": section,
+                "figures": [fig_payload("rain_thunder", fig_rain)],
+            }
+
+    can_use_precomputed_overview_fog = (
+        section == "overview"
+        and requested_figure_ids == {"fog_low_cloud"}
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_overview_fog:
+        mode_label_map = {
+            "all": "All Days",
+            "rain": "Rain Days",
+            "non_rain": "Non-rain Days",
+        }
+        selected_monthly_label = mode_label_map.get(fogMonthlyMode, "All Days")
+        fig_fog = build_overview_fog_figure_from_precomputed(
+            icao,
+            fog_mode=fogMonthlyMode,
+            title=f"Fog/Low Cloud Frequency ({selected_monthly_label})",
+            month_numbers=month_number_order,
+            season=season,
+            year_start=yearStart,
+            year_end=yearEnd,
+            enso=enso,
+            iod=iod,
+            sam=sam,
+            mjo=mjo,
+        )
+        if fig_fog is not None:
+            y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+            apply_common_layout(fig_fog)
+            apply_frequency_panel_layout(fig_fog)
+            if "fog_low_cloud" in y_ceilings:
+                fig_fog.update_yaxes(range=[0, float(y_ceilings["fog_low_cloud"])], autorange=False)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log_memory_phase("charts.fog_low_cloud_precomputed", section=section, icao=icao, elapsed_ms=elapsed_ms)
+            return {
+                "section": section,
+                "figures": [fig_payload("fog_low_cloud", fig_fog)],
+            }
+
+    can_use_precomputed_overview_temp = (
+        section == "overview"
+        and requested_figure_ids == {"temp_dewpoint"}
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_overview_temp:
+        fig_temp = build_overview_temp_dewpoint_figure_from_precomputed(
+            icao,
+            month_numbers=month_number_order,
+            season=season,
+            year_start=yearStart,
+            year_end=yearEnd,
+            enso=enso,
+            iod=iod,
+            sam=sam,
+            mjo=mjo,
+        )
+        if fig_temp is not None:
+            apply_common_layout(fig_temp)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log_memory_phase("charts.temp_dewpoint_precomputed", section=section, icao=icao, elapsed_ms=elapsed_ms)
+            return {
+                "section": section,
+                "figures": [fig_payload("temp_dewpoint", fig_temp)],
+            }
+
+    can_use_precomputed_overview_wind_rose = (
+        section == "overview"
+        and requested_figure_ids == {"wind_rose"}
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_overview_wind_rose:
+        fig_rose = build_overview_wind_rose_figure_from_precomputed(
+            icao,
+            month_numbers=month_number_order,
+            season=season,
+            year_start=yearStart,
+            year_end=yearEnd,
+            enso=enso,
+            iod=iod,
+            sam=sam,
+            mjo=mjo,
+        )
+        if fig_rose is not None:
+            apply_common_layout(fig_rose)
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            log_memory_phase("charts.wind_rose_precomputed", section=section, icao=icao, elapsed_ms=elapsed_ms)
+            return {
+                "section": section,
+                "figures": [fig_payload("wind_rose", fig_rose)],
+            }
+
+    can_use_precomputed_precipitation = (
+        section == "precipitation"
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_precipitation:
+        requested_precip_ids = {
+            fid for fid in requested_figure_ids if fid in {"monthly_precip", "precip_split"}
+        }
+        if not requested_figure_ids:
+            requested_precip_ids = {"monthly_precip", "precip_split"}
+        if requested_precip_ids:
+            built = build_precipitation_figures_from_precomputed(
+                icao,
+                month_numbers=month_number_order,
+                season=season,
+                year_start=yearStart,
+                year_end=yearEnd,
+                enso=enso,
+                iod=iod,
+                sam=sam,
+                mjo=mjo,
+            )
+            if built is not None:
+                fig_precip, fig_split = built
+                y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+                figures: list[dict[str, Any]] = []
+                if "monthly_precip" in requested_precip_ids:
+                    apply_common_layout(fig_precip)
+                    apply_frequency_panel_layout(fig_precip)
+                    if "monthly_precip" in y_ceilings:
+                        fig_precip.update_yaxes(range=[0, float(y_ceilings["monthly_precip"])], autorange=False)
+                    figures.append(fig_payload("monthly_precip", fig_precip))
+                if "precip_split" in requested_precip_ids:
+                    apply_common_layout(fig_split)
+                    fig_split.update_layout(
+                        margin=dict(l=62, r=DEFAULT_LEGEND_ENTRY_WIDTH + LEGEND_MARGIN_PADDING, t=48, b=22),
+                        polar=dict(
+                            domain=dict(x=[0.14, 0.92], y=[0.0, 0.93]),
+                            bgcolor="rgba(0,0,0,0)",
+                            angularaxis=dict(direction="clockwise", rotation=90),
+                            radialaxis=dict(ticksuffix="%"),
+                        ),
+                    )
+                    figures.append(fig_payload("precip_split", fig_split))
+
+                if figures:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    log_memory_phase(
+                        "charts.precipitation_precomputed",
+                        section=section,
+                        icao=icao,
+                        figures=len(figures),
+                        elapsed_ms=elapsed_ms,
+                    )
+                    return {
+                        "section": section,
+                        "figures": figures,
+                    }
+
     airport_df = load_airport_df(icao, columns_for_section(section))
+    log_memory_phase("charts.airport_loaded", section=section, icao=icao, rows=airport_df.height, cols=len(airport_df.columns))
 
     if airport_df.is_empty():
+        log_memory_phase("charts.empty_airport", section=section, icao=icao)
         return {"section": section, "figures": [], "warning": f"No data found for {icao}."}
 
-    y_ceilings = compute_airport_y_ceilings(icao, ceiling_keys_for_section(section))
+    ceiling_keys = ceiling_keys_for_figures(section, requested_figure_ids)
+    y_ceilings = compute_airport_y_ceilings(icao, ceiling_keys) if ceiling_keys else {}
+    log_memory_phase("charts.ceilings_ready", section=section, icao=icao, ceilings=len(y_ceilings))
 
     filtered_df = airport_df.filter(
         (build_range_mask("year", (yearStart, yearEnd)))
@@ -1910,6 +3317,7 @@ def charts(
         & (build_season_mask(season))
         & (build_range_mask("hour", (hourStart, hourEnd), invertHour))
     )
+    log_memory_phase("charts.base_filter", section=section, icao=icao, rows=filtered_df.height)
 
     filtered_df = apply_climate_driver_filters(
         filtered_df,
@@ -1918,231 +3326,306 @@ def charts(
         sam=sam,
         mjo=mjo,
     )
+    log_memory_phase("charts.driver_filter", section=section, icao=icao, rows=filtered_df.height)
 
     if filtered_df.is_empty():
+        log_memory_phase("charts.empty_filtered", section=section, icao=icao)
         return {"section": section, "figures": [], "warning": f"No data found for {icao} with these filters."}
 
     figures: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    memory_guard_mb = configured_memory_guard_mb()
+    memory_guard_tripped = False
+
+    def guard_before(stage: str) -> bool:
+        nonlocal memory_guard_tripped
+        if memory_guard_tripped or memory_guard_mb <= 0:
+            return memory_guard_tripped
+
+        rss = current_rss_mb()
+        if rss is None or rss < memory_guard_mb:
+            return False
+
+        memory_guard_tripped = True
+        warnings.append(
+            f"Memory guard reached ({rss:.1f} MB >= {memory_guard_mb:.1f} MB) while building {stage}; returned partial charts."
+        )
+        log_memory_phase(
+            "charts.memory_guard_trip",
+            section=section,
+            icao=icao,
+            stage=stage,
+            guard_mb=f"{memory_guard_mb:.1f}",
+            rss_mb=f"{rss:.1f}",
+        )
+        return True
 
     if section == "overview":
-        bg_img_base64 = None
-        wr_df = filtered_df.select(["WND_DIR", "WND_SPD"]).drop_nulls()
-        wr_df = wr_df.with_columns(((pl.col("WND_DIR") + 11.25) % 360 // 22.5 * 22.5).alias("dir_bin"))
-        rose_data = (
-            wr_df.with_columns(pl.col("WND_SPD").map_elements(categorize_speed, return_dtype=pl.Utf8).alias("Speed Range"))
-            .group_by(["dir_bin", "Speed Range"])
-            .agg(pl.len().alias("Frequency"))
-            .to_pandas()
-        )
-        total_obs = float(rose_data["Frequency"].sum()) if not rose_data.empty else 0.0
-        rose_data["Frequency"] = (rose_data["Frequency"] / total_obs * 100.0) if total_obs > 0 else 0.0
-        fig_rose = px.bar_polar(
-            rose_data,
-            r="Frequency",
-            theta="dir_bin",
-            color="Speed Range",
-            color_discrete_sequence=px.colors.sequential.Turbo,
-            title="Wind Rose",
-            category_orders={"Speed Range": ["0-1 kt", "1-5 kt", "5-10 kt", "10-15 kt", "15-22 kt", "22+ kt"]},
-        )
-        fig_rose.update_traces(hovertemplate="Direction: %{theta}<br>Speed: %{fullData.name}<br>Frequency: %{r:.2f}%<extra></extra>")
-        try:
-            airport_lat = COORDS_DF.loc[icao, "LAT"]
-            airport_lon = COORDS_DF.loc[icao, "LONG"]
-            bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
-        except Exception:
-            pass
-        fig_rose.update_layout(
-            legend=dict(bgcolor="rgba(255,255,255,0.88)", bordercolor="#c7d4ef", borderwidth=1),
-            polar=dict(bgcolor="rgba(0,0,0,0)", angularaxis=dict(direction="clockwise", period=360)),
-        )
-        apply_wind_rose_style(fig_rose)
-        apply_common_layout(fig_rose)
-        if bg_img_base64:
-            apply_polar_background(fig_rose, bg_img_base64)
-        figures.append(fig_payload("wind_rose", fig_rose))
-
-        rain_df = filtered_df.select([
-            "year",
-            "month",
-            "TM_FULL",
-            "PRCP_FM_09",
-            "PRST_WX_DSC_1",
-            "PRST_WX_PHENOM_1",
-            "PRST_WX_DSC_2",
-            "PRST_WX_PHENOM_2",
-        ]).to_pandas()
-        if not rain_df.empty:
-            rain_days, daily_flags = compute_daily_weather_flags(rain_df, icao)
-            if not rain_days.empty:
-                monthly_counts = (
-                    daily_flags.groupby(["bom_year", "bom_month"], as_index=False)
-                    .agg(
-                        Rain=("Rain", "sum"),
-                        Thunderstorm=("Thunderstorm", "sum"),
-                    )
-                )
-                # Rain: average over all selected years.
-                rain_avg_m = (
-                    monthly_counts.groupby("bom_month", as_index=False)["Rain"]
-                    .mean()
-                    .rename(columns={"bom_month": "month"})
-                )
-                # Thunderstorm: average only over years >= LIGHTNING_STATS_MIN_YEAR.
-                ts_avg_m = (
-                    monthly_counts[monthly_counts["bom_year"] >= LIGHTNING_STATS_MIN_YEAR]
-                    .groupby("bom_month", as_index=False)["Thunderstorm"]
-                    .mean()
-                    .rename(columns={"bom_month": "month"})
-                )
-                monthly_avg = rain_avg_m.merge(ts_avg_m, on="month", how="left")
-                monthly_avg["Thunderstorm"] = monthly_avg["Thunderstorm"].fillna(0.0)
-                monthly_avg = monthly_avg[monthly_avg["month"].isin(month_number_order)].copy()
-                monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
-                monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=month_name_order, ordered=True)
-                monthly_avg = monthly_avg.sort_values("Month")
-                rain_avg = monthly_avg.melt(
-                    id_vars=["month", "Month"],
-                    value_vars=["Rain", "Thunderstorm"],
-                    var_name="Type",
-                    value_name="Count",
-                )
-                rain_avg["Type"] = rain_avg["Type"].replace({"Thunderstorm": THUNDERSTORM_LEGEND_LABEL})
-                fig_rain = px.bar(
-                    rain_avg,
-                    x="Month",
-                    y="Count",
-                    color="Type",
-                    barmode="group",
-                    color_discrete_map={"Rain": "#2159d1", THUNDERSTORM_LEGEND_LABEL: "#c62828"},
-                    labels={"Count": "Avg Days/Month", "Type": "Category"},
-                    title="Rain/Thunderstorm Days",
-                    category_orders={"Month": month_name_order, "Type": ["Rain", THUNDERSTORM_LEGEND_LABEL]},
-                )
-                fig_rain.update_xaxes(title_text="")
-                apply_common_layout(fig_rain)
-                apply_frequency_panel_layout(fig_rain)
-                if "rain_thunder" in y_ceilings:
-                    fig_rain.update_yaxes(range=[0, y_ceilings["rain_thunder"]], autorange=False)
-                figures.append(fig_payload("rain_thunder", fig_rain))
-
-        temp_df = filtered_df.select(["TM_FULL", "AIR_TEMP", "DWPT", "PRCP_FM_09"]).to_pandas()
-        if not temp_df.empty:
-            temp_avg = monthly_avg_daily_extremes(temp_df, icao)
-            monthly_precip_avg = monthly_avg_precipitation_mm(temp_df, icao)
-        else:
-            temp_avg = pd.DataFrame()
-            monthly_precip_avg = pd.DataFrame()
-
-        if not temp_avg.empty:
-            temp_avg = temp_avg[temp_avg["month"].isin(month_number_order)].copy()
-            temp_avg["Month"] = temp_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
-            temp_avg["Month"] = pd.Categorical(temp_avg["Month"], categories=month_name_order, ordered=True)
-            temp_avg = temp_avg.sort_values("Month")
-            fig_temp = go.Figure()
-            if not monthly_precip_avg.empty:
-                monthly_precip_avg = monthly_precip_avg[monthly_precip_avg["month"].isin(month_number_order)].copy()
-                monthly_precip_avg["Month"] = monthly_precip_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
-                precip_by_month = (
-                    monthly_precip_avg.set_index("Month")["Avg Monthly Precip"]
-                    .reindex(month_name_order)
-                    .fillna(0.0)
-                )
-                fig_temp.add_bar(
-                    x=month_name_order,
-                    y=precip_by_month.astype(float).tolist(),
-                    name="Avg Monthly Precip",
-                    yaxis="y2",
-                    marker_color="#1565c0",
-                    marker_line_color="#0d47a1",
-                    marker_line_width=1,
-                    opacity=0.6,
-                    zorder=0,
-                    hovertemplate="Month: %{x}<br>Avg Monthly Precip: %{y:.1f} mm<extra></extra>",
-                )
-
-            temp_trace_styles = {
-                "Avg Daily Max T": {"color": "#d32f2f", "visible": True},
-                "Avg Daily Min T": {"color": "#ef9a9a", "visible": True},
-                "Avg Daily Max Td": {"color": "#0b3d91", "visible": "legendonly"},
-                "Avg Daily Min Td": {"color": "#90caf9", "visible": "legendonly"},
-            }
-            for trace_name, style in temp_trace_styles.items():
-                fig_temp.add_trace(go.Scatter(
-                    x=temp_avg["Month"],
-                    y=temp_avg[trace_name],
-                    mode="lines+markers",
-                    name=trace_name,
-                    line=dict(color=style["color"], width=2.5),
-                    marker=dict(color=style["color"], size=7),
-                    visible=style["visible"],
-                    zorder=2,
-                    hovertemplate=f"Month: %{{x}}<br>{trace_name}: %{{y:.1f}} °C<extra></extra>",
-                ))
-
-            fig_temp.update_xaxes(title_text="")
-            fig_temp.update_yaxes(title_text="Temperature / Dewpoint (°C)")
-            fig_temp.update_layout(
-                title="Temperature, Dewpoint & Precipitation",
-                yaxis2=dict(
-                    title="Avg Monthly Precipitation (mm)",
-                    overlaying="y",
-                    side="right",
-                    rangemode="tozero",
-                    showgrid=False,
-                ),
-                bargap=0.22,
-            )
-            apply_common_layout(fig_temp)
-            apply_frequency_panel_layout(fig_temp)
-            y1_min = y_ceilings.get("temp_dewpoint_y1_min")
-            y1_max = y_ceilings.get("temp_dewpoint_y1_max")
-            y2_max = y_ceilings.get("temp_dewpoint_y2")
-            if y1_min is not None and y1_max is not None:
-                fig_temp.update_yaxes(range=[y1_min, y1_max], autorange=False)
-            if y2_max is not None:
-                fig_temp.update_layout(yaxis2={**fig_temp.layout.yaxis2.to_plotly_json(), "range": [0, y2_max], "autorange": False})
-            figures.append(fig_payload("temp_dewpoint", fig_temp))
-
-        fog_df = filtered_df.select([
-            "year",
-            "month",
-            "TM_FULL",
-            "AIR_TEMP",
-            "DWPT",
-            "VSBY",
-            "AWS_VSBY",
-            "PRCP_10",
-            "PRCP_FM_09",
-            "PRST_WX_PHENOM_1",
-            "PRST_WX_PHENOM_2",
-            "PRST_WX_DSC_1",
-            "PRST_WX_DSC_2",
-            "CEIL_CLD_AMT_1",
-            "CEIL_CLD_AMT_2",
-            "CEIL_CLD_HT_1",
-            "CEIL_CLD_HT_2",
-        ]).to_pandas()
-        if not fog_df.empty:
-            fog_mode_map = split_fog_day_type_datasets(fog_df, icao)
-            selected_monthly_df, selected_monthly_label = fog_mode_map.get(fogMonthlyMode, fog_mode_map["all"])
-            if not selected_monthly_df.empty:
-                fig_fog = build_fog_low_cloud_frequency_figure(
-                    selected_monthly_df,
-                    f"Fog/Low Cloud Frequency ({selected_monthly_label})",
-                    icao,
-                    month_number_order,
-                )
+        if wants_figure("wind_rose"):
+            if guard_before("overview.wind_rose"):
+                pass
             else:
-                fig_fog = build_placeholder_figure(
-                    f"Fog/Low Cloud Frequency ({selected_monthly_label})",
-                    "No records for selected day filter",
+                bg_img_base64 = None
+                wr_df = filtered_df.select(["WND_DIR", "WND_SPD"]).drop_nulls()
+                wr_df = wr_df.with_columns(((pl.col("WND_DIR") + 11.25) % 360 // 22.5 * 22.5).alias("dir_bin"))
+                rose_data = (
+                    wr_df.with_columns(pl.col("WND_SPD").map_elements(categorize_speed, return_dtype=pl.Utf8).alias("Speed Range"))
+                    .group_by(["dir_bin", "Speed Range"])
+                    .agg(pl.len().alias("Frequency"))
+                    .to_pandas()
                 )
-            apply_common_layout(fig_fog)
-            apply_frequency_panel_layout(fig_fog)
-            if "fog_low_cloud" in y_ceilings:
-                fig_fog.update_yaxes(range=[0, y_ceilings["fog_low_cloud"]], autorange=False)
-            figures.append(fig_payload("fog_low_cloud", fig_fog))
+                total_obs = float(rose_data["Frequency"].sum()) if not rose_data.empty else 0.0
+                rose_data["Frequency"] = (rose_data["Frequency"] / total_obs * 100.0) if total_obs > 0 else 0.0
+                fig_rose = px.bar_polar(
+                    rose_data,
+                    r="Frequency",
+                    theta="dir_bin",
+                    color="Speed Range",
+                    color_discrete_sequence=px.colors.sequential.Turbo,
+                    title="Wind Rose",
+                    category_orders={"Speed Range": ["0-1 kt", "1-5 kt", "5-10 kt", "10-15 kt", "15-22 kt", "22+ kt"]},
+                )
+                fig_rose.update_traces(hovertemplate="Direction: %{theta}<br>Speed: %{fullData.name}<br>Frequency: %{r:.2f}%<extra></extra>")
+                try:
+                    airport_lat = COORDS_DF.loc[icao, "LAT"]
+                    airport_lon = COORDS_DF.loc[icao, "LONG"]
+                    bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+                except Exception:
+                    pass
+                fig_rose.update_layout(
+                    legend=dict(bgcolor="rgba(255,255,255,0.88)", bordercolor="#c7d4ef", borderwidth=1),
+                    polar=dict(bgcolor="rgba(0,0,0,0)", angularaxis=dict(direction="clockwise", period=360)),
+                )
+                apply_wind_rose_style(fig_rose)
+                apply_common_layout(fig_rose)
+                if bg_img_base64:
+                    apply_polar_background(fig_rose, bg_img_base64)
+                figures.append(fig_payload("wind_rose", fig_rose))
+
+        if wants_figure("rain_thunder"):
+            if guard_before("overview.rain_thunder"):
+                pass
+            else:
+                rain_df = filtered_df.select([
+                    "year",
+                    "month",
+                    "TM_FULL",
+                    "PRCP_FM_09",
+                    "PRST_WX_DSC_1",
+                    "PRST_WX_PHENOM_1",
+                    "PRST_WX_DSC_2",
+                    "PRST_WX_PHENOM_2",
+                ]).to_pandas()
+                if not rain_df.empty:
+                    rain_days, daily_flags = compute_daily_weather_flags(rain_df, icao)
+                    if not rain_days.empty:
+                        monthly_counts = (
+                            daily_flags.groupby(["bom_year", "bom_month"], as_index=False)
+                            .agg(
+                                Rain=("Rain", "sum"),
+                                Thunderstorm=("Thunderstorm", "sum"),
+                            )
+                        )
+                        # Rain: average over all selected years.
+                        rain_avg_m = (
+                            monthly_counts.groupby("bom_month", as_index=False)["Rain"]
+                            .mean()
+                            .rename(columns={"bom_month": "month"})
+                        )
+                        # Thunderstorm: average only over years >= LIGHTNING_STATS_MIN_YEAR.
+                        ts_avg_m = (
+                            monthly_counts[monthly_counts["bom_year"] >= LIGHTNING_STATS_MIN_YEAR]
+                            .groupby("bom_month", as_index=False)["Thunderstorm"]
+                            .mean()
+                            .rename(columns={"bom_month": "month"})
+                        )
+                        monthly_avg = rain_avg_m.merge(ts_avg_m, on="month", how="left")
+                        monthly_avg["Thunderstorm"] = monthly_avg["Thunderstorm"].fillna(0.0)
+                        monthly_avg = monthly_avg[monthly_avg["month"].isin(month_number_order)].copy()
+                        monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+                        monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=month_name_order, ordered=True)
+                        monthly_avg = monthly_avg.sort_values("Month")
+                        rain_avg = monthly_avg.melt(
+                            id_vars=["month", "Month"],
+                            value_vars=["Rain", "Thunderstorm"],
+                            var_name="Type",
+                            value_name="Count",
+                        )
+                        rain_avg["Type"] = rain_avg["Type"].replace({"Thunderstorm": THUNDERSTORM_LEGEND_LABEL})
+                        fig_rain = px.bar(
+                            rain_avg,
+                            x="Month",
+                            y="Count",
+                            color="Type",
+                            barmode="group",
+                            color_discrete_map={"Rain": "#2159d1", THUNDERSTORM_LEGEND_LABEL: "#c62828"},
+                            labels={"Count": "Avg Days/Month", "Type": "Category"},
+                            title="Rain/Thunderstorm Days",
+                            category_orders={"Month": month_name_order, "Type": ["Rain", THUNDERSTORM_LEGEND_LABEL]},
+                        )
+                        fig_rain.update_xaxes(title_text="")
+                        apply_common_layout(fig_rain)
+                        apply_frequency_panel_layout(fig_rain)
+                        if "rain_thunder" in y_ceilings:
+                            fig_rain.update_yaxes(range=[0, y_ceilings["rain_thunder"]], autorange=False)
+                        figures.append(fig_payload("rain_thunder", fig_rain))
+
+        if wants_figure("temp_dewpoint"):
+            if guard_before("overview.temp_dewpoint"):
+                pass
+            else:
+                temp_df = filtered_df.select(["TM_FULL", "AIR_TEMP", "DWPT", "PRCP_FM_09"]).to_pandas()
+                if not temp_df.empty:
+                    temp_avg = monthly_avg_daily_extremes(temp_df, icao)
+                    monthly_precip_avg = monthly_avg_precipitation_mm(temp_df, icao)
+                else:
+                    temp_avg = pd.DataFrame()
+                    monthly_precip_avg = pd.DataFrame()
+
+                if not temp_avg.empty:
+                    temp_avg = temp_avg[temp_avg["month"].isin(month_number_order)].copy()
+                    temp_avg["Month"] = temp_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+                    temp_avg["Month"] = pd.Categorical(temp_avg["Month"], categories=month_name_order, ordered=True)
+                    temp_avg = temp_avg.sort_values("Month")
+                    fig_temp = go.Figure()
+                    if not monthly_precip_avg.empty:
+                        monthly_precip_avg = monthly_precip_avg[monthly_precip_avg["month"].isin(month_number_order)].copy()
+                        monthly_precip_avg["Month"] = monthly_precip_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+                        precip_by_month = (
+                            monthly_precip_avg.set_index("Month")["Avg Monthly Precip"]
+                            .reindex(month_name_order)
+                            .fillna(0.0)
+                        )
+                        fig_temp.add_bar(
+                            x=month_name_order,
+                            y=precip_by_month.astype(float).tolist(),
+                            name="Avg Monthly Precip",
+                            yaxis="y2",
+                            marker_color="#1565c0",
+                            marker_line_color="#0d47a1",
+                            marker_line_width=1,
+                            opacity=0.6,
+                            zorder=0,
+                            hovertemplate="Month: %{x}<br>Avg Monthly Precip: %{y:.1f} mm<extra></extra>",
+                        )
+
+                    temp_trace_styles = {
+                        "Avg Daily Max T": {"color": "#d32f2f", "visible": True},
+                        "Avg Daily Min T": {"color": "#ef9a9a", "visible": True},
+                        "Avg Daily Max Td": {"color": "#0b3d91", "visible": "legendonly"},
+                        "Avg Daily Min Td": {"color": "#90caf9", "visible": "legendonly"},
+                    }
+                    for trace_name, style in temp_trace_styles.items():
+                        fig_temp.add_trace(go.Scatter(
+                            x=temp_avg["Month"],
+                            y=temp_avg[trace_name],
+                            mode="lines+markers",
+                            name=trace_name,
+                            line=dict(color=style["color"], width=2.5),
+                            marker=dict(color=style["color"], size=7),
+                            visible=style["visible"],
+                            zorder=2,
+                            hovertemplate=f"Month: %{{x}}<br>{trace_name}: %{{y:.1f}} °C<extra></extra>",
+                        ))
+
+                    fig_temp.update_xaxes(title_text="")
+                    fig_temp.update_yaxes(title_text="Temperature / Dewpoint (°C)")
+                    fig_temp.update_layout(
+                        title="Temperature, Dewpoint & Precipitation",
+                        yaxis2=dict(
+                            title="Avg Monthly Precipitation (mm)",
+                            overlaying="y",
+                            side="right",
+                            rangemode="tozero",
+                            showgrid=False,
+                        ),
+                        bargap=0.22,
+                    )
+                    apply_common_layout(fig_temp)
+                    apply_frequency_panel_layout(fig_temp)
+                    y1_min = y_ceilings.get("temp_dewpoint_y1_min")
+                    y1_max = y_ceilings.get("temp_dewpoint_y1_max")
+                    y2_max = y_ceilings.get("temp_dewpoint_y2")
+                    if y1_min is not None and y1_max is not None:
+                        fig_temp.update_yaxes(range=[y1_min, y1_max], autorange=False)
+                    if y2_max is not None:
+                        fig_temp.update_layout(yaxis2={**fig_temp.layout.yaxis2.to_plotly_json(), "range": [0, y2_max], "autorange": False})
+                    figures.append(fig_payload("temp_dewpoint", fig_temp))
+
+        if wants_figure("fog_low_cloud"):
+            fig_fog = None
+            if guard_before("overview.fog_low_cloud"):
+                pass
+            else:
+                mode_label_map = {
+                    "all": "All Days",
+                    "rain": "Rain Days",
+                    "non_rain": "Non-rain Days",
+                }
+                selected_monthly_label = mode_label_map.get(fogMonthlyMode, "All Days")
+                can_use_precomputed_overview_fog = (
+                    hourStart == 0
+                    and hourEnd == 23
+                    and (not invertHour)
+                )
+
+                if can_use_precomputed_overview_fog:
+                    fig_fog = build_overview_fog_figure_from_precomputed(
+                        icao,
+                        fog_mode=fogMonthlyMode,
+                        title=f"Fog/Low Cloud Frequency ({selected_monthly_label})",
+                        month_numbers=month_number_order,
+                        season=season,
+                        year_start=yearStart,
+                        year_end=yearEnd,
+                        enso=enso,
+                        iod=iod,
+                        sam=sam,
+                        mjo=mjo,
+                    )
+
+                if fig_fog is None:
+                    fog_df = filtered_df.select([
+                        "year",
+                        "month",
+                        "TM_FULL",
+                        "AIR_TEMP",
+                        "DWPT",
+                        "VSBY",
+                        "AWS_VSBY",
+                        "PRCP_10",
+                        "PRCP_FM_09",
+                        "PRST_WX_PHENOM_1",
+                        "PRST_WX_PHENOM_2",
+                        "PRST_WX_DSC_1",
+                        "PRST_WX_DSC_2",
+                        "CEIL_CLD_AMT_1",
+                        "CEIL_CLD_AMT_2",
+                        "CEIL_CLD_HT_1",
+                        "CEIL_CLD_HT_2",
+                    ]).to_pandas()
+                    if not fog_df.empty:
+                        fog_mode_map = split_fog_day_type_datasets(fog_df, icao)
+                        selected_monthly_df, selected_monthly_label = fog_mode_map.get(fogMonthlyMode, fog_mode_map["all"])
+                        if not selected_monthly_df.empty:
+                            fig_fog = build_fog_low_cloud_frequency_figure(
+                                selected_monthly_df,
+                                f"Fog/Low Cloud Frequency ({selected_monthly_label})",
+                                icao,
+                                month_number_order,
+                            )
+                    else:
+                        fig_fog = build_placeholder_figure(
+                            f"Fog/Low Cloud Frequency ({selected_monthly_label})",
+                            "No records for selected day filter",
+                        )
+
+            if fig_fog is not None:
+                apply_common_layout(fig_fog)
+                apply_frequency_panel_layout(fig_fog)
+                if "fog_low_cloud" in y_ceilings:
+                    fig_fog.update_yaxes(range=[0, y_ceilings["fog_low_cloud"]], autorange=False)
+                figures.append(fig_payload("fog_low_cloud", fig_fog))
 
     elif section == "wind":
         bg_img_base64 = None
@@ -3350,6 +4833,11 @@ def charts(
         "meanSpeed": float(filtered_df["WND_SPD"].mean()) if len(filtered_df) else 0.0,
         "maxGust": float(filtered_df["MAX_WND_GUST_10"].max()) if len(filtered_df) else 0.0,
         "avgTemp": float(filtered_df["AIR_TEMP"].mean()) if len(filtered_df) else 0.0,
-    }
+    } if includeMetrics else {}
 
-    return {"section": section, "figures": figures, "metrics": metrics}
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    log_memory_phase("charts.response", section=section, icao=icao, figures=len(figures), elapsed_ms=elapsed_ms)
+    response: dict[str, Any] = {"section": section, "figures": figures, "metrics": metrics}
+    if warnings:
+        response["warning"] = " ".join(warnings)
+    return response

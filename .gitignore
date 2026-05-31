@@ -9,6 +9,21 @@ temp/
 !aerodrome_lat_long.csv
 !climatedrivers.csv
 
+# Required precomputed chart artifacts (keep all other JSON ignored)
+!statistics/precomputed/
+!statistics/precomputed/y_ceilings/
+!statistics/precomputed/y_ceilings/*.json
+!statistics/precomputed/overview_fog_monthly/
+!statistics/precomputed/overview_fog_monthly/*.json
+!statistics/precomputed/overview_rain_thunder_monthly/
+!statistics/precomputed/overview_rain_thunder_monthly/*.json
+!statistics/precomputed/overview_temp_dewpoint/
+!statistics/precomputed/overview_temp_dewpoint/*.json
+!statistics/precomputed/overview_wind_rose/
+!statistics/precomputed/overview_wind_rose/*.json
+!statistics/precomputed/precipitation/
+!statistics/precomputed/precipitation/*.json
+
 # --- PYTHON SETTINGS ---
 # Byte-compiled / optimized / DLL files
 __pycache__/

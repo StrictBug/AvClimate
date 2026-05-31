@@ -17,3 +17,15 @@ git push origin main
 # 1) Push to main
 # 2) In Render: New + > Blueprint, select this repo
 # 3) It will use render.yaml and deploy /api + frontend together
+
+# generate precomputed artifacts
+cd /workspaces/AvClimate
+source .venv/bin/activate
+python scripts/helpers/precompute_y_ceilings.py
+python scripts/helpers/precompute_overview_fog_monthly.py
+python scripts/helpers/precompute_overview_rain_thunder_monthly.py
+python scripts/helpers/precompute_overview_temp_dewpoint_monthly.py
+python scripts/helpers/precompute_overview_wind_rose.py
+
+#verify generated precomputed artifacts
+ls -lh statistics/y_ceilings_by_icao.json statistics/overview_fog_monthly_by_icao.json statistics/overview_rain_thunder_monthly_by_icao.json statistics/overview_temp_dewpoint_by_icao.json statistics/overview_wind_rose_by_icao.json
