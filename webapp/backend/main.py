@@ -2540,6 +2540,26 @@ def build_fog_low_cloud_figures_from_precomputed(
     # wind distribution plot
     wind_df = pd.DataFrame(load_precomputed_fog_low_cloud_for_airport(icao, "cloud_distribution")) if "cloud_distribution" in requested else pd.DataFrame()
     if not wind_df.empty:
+        # The cloud distribution figure is the heaviest fog chart. On Render free tier,
+        # skip building it when RSS is already close to the configured guard so the
+        # process does not get OOM-killed mid-request.
+        guard_mb = configured_memory_guard_mb()
+        rss_mb = current_rss_mb()
+        near_guard = (
+            guard_mb > 0
+            and rss_mb is not None
+            and rss_mb >= max(0.0, guard_mb - 140.0)
+        )
+        if near_guard:
+            log_memory_phase(
+                "charts.fog_cloud_distribution_skipped",
+                section="fog_low_cloud",
+                icao=icao,
+                guard_mb=f"{guard_mb:.1f}",
+                rss_mb=f"{rss_mb:.1f}",
+            )
+            return figures
+
         wind_df = wind_df[wind_df["mode"] == fog_wind_mode]
         wind_df = filter_precomputed_rows_by_time(
             wind_df,
