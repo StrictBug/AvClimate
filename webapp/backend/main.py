@@ -4484,64 +4484,63 @@ def charts(
                 fog_dewpoint_mode=fogDewpointMode,
             )
 
-            if built:
-                y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
-                figures: list[dict[str, Any]] = []
+            y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+            figures: list[dict[str, Any]] = []
 
-                if "monthly_fog" in requested_fog_ids:
-                    fig = built.get("monthly_fog")
-                    if fig is None:
-                        fig = build_placeholder_figure(f"Fog/Low Cloud Frequency ({selected_monthly_label})")
-                    apply_common_layout(fig)
-                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
-                    apply_frequency_panel_layout(fig)
-                    if "monthly_fog" in y_ceilings:
-                        fig.update_yaxes(range=[0, float(y_ceilings["monthly_fog"])], autorange=False)
-                    figures.append(fig_payload("monthly_fog", fig))
+            if "monthly_fog" in requested_fog_ids:
+                fig = built.get("monthly_fog")
+                if fig is None:
+                    fig = build_placeholder_figure(f"Fog/Low Cloud Frequency ({selected_monthly_label})")
+                apply_common_layout(fig)
+                apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                apply_frequency_panel_layout(fig)
+                if "monthly_fog" in y_ceilings:
+                    fig.update_yaxes(range=[0, float(y_ceilings["monthly_fog"])], autorange=False)
+                figures.append(fig_payload("monthly_fog", fig))
 
-                if "fog_share" in requested_fog_ids:
-                    fig = built.get("fog_share")
-                    if fig is None:
-                        fig = build_placeholder_figure(f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})")
-                    apply_common_layout(fig)
-                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
-                    apply_frequency_panel_layout(fig)
-                    if "fog_share" in y_ceilings:
-                        fig.update_yaxes(range=[0, float(y_ceilings["fog_share"])], autorange=False)
-                    figures.append(fig_payload("fog_share", fig))
+            if "fog_share" in requested_fog_ids:
+                fig = built.get("fog_share")
+                if fig is None:
+                    fig = build_placeholder_figure(f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})")
+                apply_common_layout(fig)
+                apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                apply_frequency_panel_layout(fig)
+                if "fog_share" in y_ceilings:
+                    fig.update_yaxes(range=[0, float(y_ceilings["fog_share"])], autorange=False)
+                figures.append(fig_payload("fog_share", fig))
 
-                if "cloud_distribution" in requested_fog_ids:
-                    fig = built.get("cloud_distribution")
-                    if fig is None:
-                        fig = build_placeholder_figure(f"Wind Direction/Strength ({selected_wind_label})")
-                    apply_common_layout(fig)
-                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=52, title_text="Category", groupclick="togglegroup", bgcolor="rgba(255,255,255,0.92)")
-                    figures.append(fig_payload("cloud_distribution", fig))
+            if "cloud_distribution" in requested_fog_ids:
+                fig = built.get("cloud_distribution")
+                if fig is None:
+                    fig = build_placeholder_figure(f"Wind Direction/Strength ({selected_wind_label})")
+                apply_common_layout(fig)
+                apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=52, title_text="Category", groupclick="togglegroup", bgcolor="rgba(255,255,255,0.92)")
+                figures.append(fig_payload("cloud_distribution", fig))
 
-                if "fog_cloud_joint" in requested_fog_ids:
-                    fig = built.get("fog_cloud_joint")
-                    if fig is None:
-                        fig = build_placeholder_figure(f"Avg Dewpoint by Month ({selected_dewpoint_label})")
-                    apply_common_layout(fig)
-                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
-                    apply_frequency_panel_layout(fig)
-                    if "fog_cloud_joint_min" in y_ceilings and "fog_cloud_joint_max" in y_ceilings:
-                        fig.update_yaxes(range=[float(y_ceilings["fog_cloud_joint_min"]), float(y_ceilings["fog_cloud_joint_max"])], autorange=False)
-                    figures.append(fig_payload("fog_cloud_joint", fig))
+            if "fog_cloud_joint" in requested_fog_ids:
+                fig = built.get("fog_cloud_joint")
+                if fig is None:
+                    fig = build_placeholder_figure(f"Avg Dewpoint by Month ({selected_dewpoint_label})")
+                apply_common_layout(fig)
+                apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                apply_frequency_panel_layout(fig)
+                if "fog_cloud_joint_min" in y_ceilings and "fog_cloud_joint_max" in y_ceilings:
+                    fig.update_yaxes(range=[float(y_ceilings["fog_cloud_joint_min"]), float(y_ceilings["fog_cloud_joint_max"])], autorange=False)
+                figures.append(fig_payload("fog_cloud_joint", fig))
 
-                if figures:
-                    elapsed_ms = int((time.perf_counter() - started) * 1000)
-                    log_memory_phase(
-                        "charts.fog_low_cloud_precomputed",
-                        section=section,
-                        icao=icao,
-                        figures=len(figures),
-                        elapsed_ms=elapsed_ms,
-                    )
-                    return {
-                        "section": section,
-                        "figures": figures,
-                    }
+            if figures:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                log_memory_phase(
+                    "charts.fog_low_cloud_precomputed",
+                    section=section,
+                    icao=icao,
+                    figures=len(figures),
+                    elapsed_ms=elapsed_ms,
+                )
+                return {
+                    "section": section,
+                    "figures": figures,
+                }
 
     can_use_precomputed_smoke_dust = (
         section == "smoke_dust"
