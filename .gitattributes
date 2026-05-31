@@ -1,1 +1,2 @@
-*.parquet filter=lfs diff=lfs merge=lfs -text
+# Parquet files are intentionally not tracked in Git LFS.
+# Data is provided to runtime via archive bootstrap configured in render.yaml.

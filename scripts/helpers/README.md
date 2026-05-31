@@ -19,6 +19,8 @@ Utility/data-prep scripts have been consolidated into this directory.
 - `precompute_overview_wind_rose.py`: build `statistics/overview_wind_rose_by_icao.json` for climate-aware overview wind rose rendering
 - `precompute_precipitation.py`: build `statistics/precomputed/precipitation/*.json` for climate-aware precipitation charts (monthly and directional split)
 - `check_overview_precip_rain_consistency.py`: verify overview rain_thunder Rain bars match precipitation monthly_precip Rain bars for a filter set
+- `package_data_archives.sh`: package local parquet folders into deployable archives under `artifacts/`
+- `bootstrap_data_from_release.sh`: fetch/extract parquet archives for deploy/runtime when local parquet data is absent
 
 ## Usage
 
@@ -35,4 +37,27 @@ python scripts/helpers/precompute_overview_temp_dewpoint_monthly.py
 python scripts/helpers/precompute_overview_wind_rose.py
 python scripts/helpers/precompute_precipitation.py
 python scripts/helpers/check_overview_precip_rain_consistency.py --base-url http://127.0.0.1:8000 --icao YMML
+./scripts/helpers/package_data_archives.sh
 ```
+
+## Deploy Data Bootstrap (No-LFS)
+
+Render build now runs `scripts/helpers/bootstrap_data_from_release.sh` before dependency install.
+
+Set either:
+
+- `AVCLIMATE_RELEASE_BASE_URL` (for example `https://github.com/<owner>/<repo>/releases/download/<tag>`)
+
+or both explicit URLs:
+
+- `AVCLIMATE_BY_ICAO_URL`
+- `AVCLIMATE_LIGHTNING_URL`
+
+Optional integrity vars:
+
+- `AVCLIMATE_BY_ICAO_SHA256`
+- `AVCLIMATE_LIGHTNING_SHA256`
+
+Optional auth var (for private release assets):
+
+- `GITHUB_TOKEN`

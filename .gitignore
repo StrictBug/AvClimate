@@ -9,6 +9,11 @@ temp/
 !aerodrome_lat_long.csv
 !climatedrivers.csv
 
+# Parquet datasets are kept local and delivered via bootstrap archives at deploy time.
+data/by_icao/
+data/lightning_by_icao/
+artifacts/
+
 # Required precomputed chart artifacts (keep all other JSON ignored)
 !statistics/precomputed/
 !statistics/precomputed/y_ceilings/

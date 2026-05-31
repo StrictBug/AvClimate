@@ -4,9 +4,21 @@ services:
     env: python
     plan: free
     autoDeploy: true
-    buildCommand: pip install -r webapp/requirements.txt
+    buildCommand: bash scripts/helpers/bootstrap_data_from_release.sh && pip install -r webapp/requirements.txt
     envVars:
       - key: CHARTS_MEMORY_GUARD_MB
         value: "430"
+      - key: AVCLIMATE_RELEASE_BASE_URL
+        sync: false
+      - key: AVCLIMATE_BY_ICAO_URL
+        sync: false
+      - key: AVCLIMATE_LIGHTNING_URL
+        sync: false
+      - key: AVCLIMATE_BY_ICAO_SHA256
+        sync: false
+      - key: AVCLIMATE_LIGHTNING_SHA256
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
     startCommand: python -m uvicorn webapp.backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/options
