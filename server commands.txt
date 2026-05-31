@@ -26,10 +26,16 @@ python scripts/helpers/precompute_overview_fog_monthly.py
 python scripts/helpers/precompute_overview_rain_thunder_monthly.py
 python scripts/helpers/precompute_overview_temp_dewpoint_monthly.py
 python scripts/helpers/precompute_overview_wind_rose.py
+python scripts/helpers/precompute_wind_gale_monthly.py
+python scripts/helpers/precompute_fog_low_cloud.py
+python scripts/helpers/precompute_smoke_dust.py
 
 #verify generated precomputed artifacts
 ls -lh statistics/y_ceilings_by_icao.json statistics/overview_fog_monthly_by_icao.json statistics/overview_rain_thunder_monthly_by_icao.json statistics/overview_temp_dewpoint_by_icao.json statistics/overview_wind_rose_by_icao.json
 
+# Live monitor for fog/smoke precompute progress
+# Shows true MB with 3 decimals and percent complete.
+while true; do clear; bash /workspaces/AvClimate/scripts/helpers/watch_precompute_progress.sh; sleep 10; done
 # Package parquet data archives for no-LFS deploy flow
 ./scripts/helpers/package_data_archives.sh
 

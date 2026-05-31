@@ -1,5 +1,6 @@
 import base64
 import glob
+import gzip
 import json
 import logging
 import math
@@ -49,6 +50,9 @@ OVERVIEW_RAIN_THUNDER_MONTHLY_DIR = os.path.join(PRECOMPUTED_DIR, "overview_rain
 OVERVIEW_WIND_ROSE_DIR = os.path.join(PRECOMPUTED_DIR, "overview_wind_rose")
 OVERVIEW_TEMP_DEWPOINT_DIR = os.path.join(PRECOMPUTED_DIR, "overview_temp_dewpoint")
 PRECIPITATION_PRECOMPUTED_DIR = os.path.join(PRECOMPUTED_DIR, "precipitation")
+WIND_GALE_MONTHLY_DIR = os.path.join(PRECOMPUTED_DIR, "wind_gale_monthly")
+FOG_LOW_CLOUD_PRECOMPUTED_DIR = os.path.join(PRECOMPUTED_DIR, "fog_low_cloud")
+SMOKE_DUST_PRECOMPUTED_DIR = os.path.join(PRECOMPUTED_DIR, "smoke_dust")
 LIGHTNING_RADIUS_KM = 8.0
 LIGHTNING_WINDOW_MINUTES = 10
 LIGHTNING_COVERAGE_START_UTC = pd.Timestamp("2008-02-25T00:00:00Z")
@@ -265,10 +269,18 @@ def precomputed_airport_file(directory: str, icao: str) -> str:
 
 
 def read_json_file(path: str) -> Any | None:
-    if not os.path.exists(path):
-        return None
+    resolved_path = path
+    if not os.path.exists(resolved_path):
+        gz_path = f"{path}.gz"
+        if os.path.exists(gz_path):
+            resolved_path = gz_path
+        else:
+            return None
     try:
-        with open(path, encoding="utf-8") as handle:
+        if resolved_path.endswith(".gz"):
+            with gzip.open(resolved_path, "rt", encoding="utf-8") as handle:
+                return json.load(handle)
+        with open(resolved_path, encoding="utf-8") as handle:
             return json.load(handle)
     except Exception:
         return None
@@ -297,7 +309,7 @@ def load_precomputed_y_ceilings_legacy() -> dict[str, dict[str, float]]:
     return data
 
 
-@lru_cache(maxsize=1024)
+@lru_cache(maxsize=128)
 def load_precomputed_y_ceilings_for_airport(icao: str) -> dict[str, float]:
     raw = read_json_file(precomputed_airport_file(Y_CEILINGS_DIR, icao))
     if isinstance(raw, dict):
@@ -375,7 +387,7 @@ def load_precomputed_overview_fog_monthly_legacy() -> dict[str, dict[str, list[d
     return data
 
 
-@lru_cache(maxsize=1024)
+@lru_cache(maxsize=128)
 def load_precomputed_overview_fog_monthly_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
     raw = read_json_file(precomputed_airport_file(OVERVIEW_FOG_MONTHLY_DIR, icao))
     parsed = _parse_fog_mode_map(raw)
@@ -423,7 +435,7 @@ def load_precomputed_overview_rain_thunder_monthly_legacy() -> dict[str, list[di
     return data
 
 
-@lru_cache(maxsize=1024)
+@lru_cache(maxsize=128)
 def load_precomputed_overview_rain_thunder_monthly_for_airport(icao: str) -> list[dict[str, Any]]:
     raw = read_json_file(precomputed_airport_file(OVERVIEW_RAIN_THUNDER_MONTHLY_DIR, icao))
     parsed = _parse_rain_rows(raw)
@@ -472,13 +484,43 @@ def load_precomputed_overview_wind_rose_legacy() -> dict[str, list[dict[str, Any
     return data
 
 
-@lru_cache(maxsize=1024)
+@lru_cache(maxsize=128)
 def load_precomputed_overview_wind_rose_for_airport(icao: str) -> list[dict[str, Any]]:
     raw = read_json_file(precomputed_airport_file(OVERVIEW_WIND_ROSE_DIR, icao))
     parsed = _parse_wind_rows(raw)
     if parsed:
         return parsed
     return load_precomputed_overview_wind_rose_legacy().get(icao, [])
+
+
+def _parse_wind_gale_rows(rows: Any) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+
+    parsed_rows: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            parsed_rows.append({
+                "year": int(row.get("year")),
+                "month": int(row.get("month")),
+                "enso_norm": str(row.get("enso_norm", "all")).strip().lower(),
+                "iod_norm": str(row.get("iod_norm", "all")).strip().lower(),
+                "sam_norm": str(row.get("sam_norm", "all")).strip().lower(),
+                "mjo_norm": str(row.get("mjo_norm", "all")).strip().lower(),
+                "Category": str(row.get("Category", "")).strip(),
+                "Count": float(row.get("Count", 0.0)),
+            })
+        except (TypeError, ValueError):
+            continue
+    return parsed_rows
+
+
+@lru_cache(maxsize=128)
+def load_precomputed_wind_gale_monthly_for_airport(icao: str) -> list[dict[str, Any]]:
+    raw = read_json_file(precomputed_airport_file(WIND_GALE_MONTHLY_DIR, icao))
+    return _parse_wind_gale_rows(raw)
 
 
 def _parse_temp_rows(rows: Any) -> list[dict[str, Any]]:
@@ -523,7 +565,7 @@ def load_precomputed_overview_temp_dewpoint_legacy() -> dict[str, list[dict[str,
     return data
 
 
-@lru_cache(maxsize=1024)
+@lru_cache(maxsize=128)
 def load_precomputed_overview_temp_dewpoint_for_airport(icao: str) -> list[dict[str, Any]]:
     raw = read_json_file(precomputed_airport_file(OVERVIEW_TEMP_DEWPOINT_DIR, icao))
     parsed = _parse_temp_rows(raw)
@@ -582,7 +624,7 @@ def _parse_precip_split_rows(rows: Any) -> list[dict[str, Any]]:
     return parsed
 
 
-@lru_cache(maxsize=1024)
+@lru_cache(maxsize=128)
 def load_precomputed_precipitation_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
     raw = read_json_file(precomputed_airport_file(PRECIPITATION_PRECOMPUTED_DIR, icao))
     if not isinstance(raw, dict):
@@ -595,6 +637,206 @@ def load_precomputed_precipitation_for_airport(icao: str) -> dict[str, list[dict
     if split:
         data["split"] = split
     return data
+
+
+def _parse_fog_precomputed_payload(raw: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(raw, dict):
+        return {}
+
+    def parse_rows(rows: Any, fields: dict[str, str]) -> list[dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            parsed: dict[str, Any] = {}
+            ok = True
+            for key, dtype in fields.items():
+                value = row.get(key)
+                try:
+                    if dtype == "int":
+                        parsed[key] = int(value)
+                    elif dtype == "float":
+                        parsed[key] = float(value)
+                    else:
+                        parsed[key] = str(value).strip().lower() if dtype == "norm" else str(value)
+                except (TypeError, ValueError):
+                    ok = False
+                    break
+            if ok:
+                out.append(parsed)
+        return out
+
+    payload: dict[str, list[dict[str, Any]]] = {}
+    payload["monthly"] = parse_rows(
+        raw.get("monthly", []),
+        {
+            "bom_year": "int",
+            "bom_month": "int",
+            "mode": "str",
+            "enso_norm": "norm",
+            "iod_norm": "norm",
+            "sam_norm": "norm",
+            "mjo_norm": "norm",
+            "Fog": "float",
+            "below 2000ft": "float",
+            "below 1500ft": "float",
+            "below 1000ft": "float",
+            "below 500ft": "float",
+        },
+    )
+    payload["hourly"] = parse_rows(
+        raw.get("hourly", []),
+        {
+            "bom_year": "int",
+            "bom_month": "int",
+            "hour": "int",
+            "mode": "str",
+            "enso_norm": "norm",
+            "iod_norm": "norm",
+            "sam_norm": "norm",
+            "mjo_norm": "norm",
+            "Fog": "float",
+            "below 2000ft": "float",
+            "below 1500ft": "float",
+            "below 1000ft": "float",
+            "below 500ft": "float",
+        },
+    )
+    payload["dewpoint"] = parse_rows(
+        raw.get("dewpoint", []),
+        {
+            "bom_year": "int",
+            "bom_month": "int",
+            "mode": "str",
+            "enso_norm": "norm",
+            "iod_norm": "norm",
+            "sam_norm": "norm",
+            "mjo_norm": "norm",
+            "Category": "str",
+            "dwpt_sum": "float",
+            "dwpt_count": "float",
+        },
+    )
+    payload["wind"] = parse_rows(
+        raw.get("wind", []),
+        {
+            "bom_year": "int",
+            "bom_month": "int",
+            "mode": "str",
+            "enso_norm": "norm",
+            "iod_norm": "norm",
+            "sam_norm": "norm",
+            "mjo_norm": "norm",
+            "Category": "str",
+            "dir_bin_10": "int",
+            "speed_bin": "int",
+            "Count": "float",
+        },
+    )
+    return payload
+
+
+@lru_cache(maxsize=128)
+def load_precomputed_fog_low_cloud_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
+    raw = read_json_file(precomputed_airport_file(FOG_LOW_CLOUD_PRECOMPUTED_DIR, icao))
+    return _parse_fog_precomputed_payload(raw)
+
+
+def _parse_smoke_precomputed_payload(raw: Any) -> dict[str, list[dict[str, Any]]]:
+    if not isinstance(raw, dict):
+        return {}
+
+    def parse_rows(rows: Any, fields: dict[str, str]) -> list[dict[str, Any]]:
+        if not isinstance(rows, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            parsed: dict[str, Any] = {}
+            ok = True
+            for key, dtype in fields.items():
+                value = row.get(key)
+                try:
+                    if dtype == "int":
+                        parsed[key] = int(value)
+                    elif dtype == "float":
+                        parsed[key] = float(value)
+                    else:
+                        parsed[key] = str(value).strip().lower() if dtype == "norm" else str(value)
+                except (TypeError, ValueError):
+                    ok = False
+                    break
+            if ok:
+                out.append(parsed)
+        return out
+
+    payload: dict[str, list[dict[str, Any]]] = {}
+    payload["monthly"] = parse_rows(
+        raw.get("monthly", []),
+        {
+            "year": "int",
+            "month": "int",
+            "enso_norm": "norm",
+            "iod_norm": "norm",
+            "sam_norm": "norm",
+            "mjo_norm": "norm",
+            "Phenomenon": "str",
+            "Count": "float",
+        },
+    )
+    payload["hourly"] = parse_rows(
+        raw.get("hourly", []),
+        {
+            "year": "int",
+            "month": "int",
+            "hour": "int",
+            "enso_norm": "norm",
+            "iod_norm": "norm",
+            "sam_norm": "norm",
+            "mjo_norm": "norm",
+            "Phenomenon": "str",
+            "Count": "float",
+        },
+    )
+    payload["scatter"] = parse_rows(
+        raw.get("scatter", []),
+        {
+            "year": "int",
+            "month": "int",
+            "enso_norm": "norm",
+            "iod_norm": "norm",
+            "sam_norm": "norm",
+            "mjo_norm": "norm",
+            "Phenomenon": "str",
+            "DWPT": "float",
+            "WND_SPD": "float",
+        },
+    )
+    payload["radial"] = parse_rows(
+        raw.get("radial", []),
+        {
+            "year": "int",
+            "month": "int",
+            "enso_norm": "norm",
+            "iod_norm": "norm",
+            "sam_norm": "norm",
+            "mjo_norm": "norm",
+            "Phenomenon": "str",
+            "dir_bin_10": "int",
+            "speed_bin": "int",
+            "Count": "float",
+        },
+    )
+    return payload
+
+
+@lru_cache(maxsize=128)
+def load_precomputed_smoke_dust_for_airport(icao: str) -> dict[str, list[dict[str, Any]]]:
+    raw = read_json_file(precomputed_airport_file(SMOKE_DUST_PRECOMPUTED_DIR, icao))
+    return _parse_smoke_precomputed_payload(raw)
 
 
 def split_dataset_available() -> bool:
@@ -1440,6 +1682,67 @@ def build_fog_low_cloud_frequency_figure(
     return build_fog_low_cloud_frequency_from_combined(combined, title, month_numbers)
 
 
+def filter_precomputed_rows_by_state(
+    frame: pd.DataFrame,
+    *,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+
+    selected = {
+        "enso_norm": normalize_driver_selection(enso),
+        "iod_norm": normalize_driver_selection(iod),
+        "sam_norm": normalize_driver_selection(sam),
+        "mjo_norm": normalize_driver_selection(mjo),
+    }
+
+    if all(value == "all" for value in selected.values()):
+        all_rows = frame[
+            (frame["enso_norm"] == "all")
+            & (frame["iod_norm"] == "all")
+            & (frame["sam_norm"] == "all")
+            & (frame["mjo_norm"] == "all")
+        ]
+        if not all_rows.empty:
+            return all_rows
+        return frame
+
+    filtered = frame
+    for col_name, value in selected.items():
+        if value != "all":
+            filtered = filtered[filtered[col_name] == value]
+    return filtered
+
+
+def filter_precomputed_rows_by_time(
+    frame: pd.DataFrame,
+    *,
+    year_col: str,
+    month_col: str,
+    year_start: int,
+    year_end: int,
+    month_numbers: list[int],
+    season: str,
+) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+
+    season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+    selected_months = [m for m in month_numbers if m in season_months]
+    if not selected_months:
+        return frame.head(0)
+
+    return frame[
+        (frame[year_col] >= year_start)
+        & (frame[year_col] <= year_end)
+        & (frame[month_col].isin(selected_months))
+    ].copy()
+
+
 def build_overview_fog_figure_from_precomputed(
     icao: str,
     *,
@@ -1743,6 +2046,93 @@ def build_overview_wind_rose_figure_from_precomputed(
     if bg_img_base64:
         apply_polar_background(fig_rose, bg_img_base64)
     return fig_rose
+
+
+def build_wind_gale_weather_figure_from_precomputed(
+    icao: str,
+    *,
+    month_numbers: list[int],
+    season: str,
+    year_start: int,
+    year_end: int,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+) -> go.Figure | None:
+    rows = load_precomputed_wind_gale_monthly_for_airport(icao)
+    if not rows:
+        return None
+
+    gale_data = pd.DataFrame(rows)
+    if gale_data.empty:
+        return None
+
+    season_months = set(SEASON_TO_MONTHS.get(season, SEASON_TO_MONTHS["all"]))
+    selected_months = [m for m in month_numbers if m in season_months]
+    if not selected_months:
+        return None
+
+    gale_data = gale_data[
+        (gale_data["year"] >= year_start)
+        & (gale_data["year"] <= year_end)
+        & (gale_data["month"].isin(selected_months))
+    ].copy()
+    if gale_data.empty:
+        return None
+
+    selected = {
+        "enso_norm": normalize_driver_selection(enso),
+        "iod_norm": normalize_driver_selection(iod),
+        "sam_norm": normalize_driver_selection(sam),
+        "mjo_norm": normalize_driver_selection(mjo),
+    }
+    if all(value == "all" for value in selected.values()):
+        all_rows = gale_data[
+            (gale_data["enso_norm"] == "all")
+            & (gale_data["iod_norm"] == "all")
+            & (gale_data["sam_norm"] == "all")
+            & (gale_data["mjo_norm"] == "all")
+        ]
+        if not all_rows.empty:
+            gale_data = all_rows
+    else:
+        for col_name, value in selected.items():
+            if value != "all":
+                gale_data = gale_data[gale_data[col_name] == value]
+    if gale_data.empty:
+        return None
+
+    monthly_avg = (
+        gale_data.groupby(["month", "Category"], as_index=False)["Count"]
+        .mean()
+    )
+    if monthly_avg.empty:
+        return None
+
+    month_name_order = month_labels_for_numbers(month_numbers)
+    monthly_avg = monthly_avg[monthly_avg["month"].isin(month_numbers)].copy()
+    monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+    monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=month_name_order, ordered=True)
+    monthly_avg = monthly_avg.sort_values(["Month", "Category"])
+
+    monthly_avg["Count"] = monthly_avg["Count"].apply(float)
+    monthly_avg["Month"] = monthly_avg["Month"].astype(str)
+    monthly_avg["Category"] = monthly_avg["Category"].replace({"TS": TS_LEGEND_LABEL})
+
+    fig_gales = px.bar(
+        monthly_avg,
+        x="Month",
+        y="Count",
+        color="Category",
+        barmode="stack",
+        labels={"Count": "Avg Gale Obs/Month"},
+        title="Monthly Gale Frequency by Weather Type",
+        category_orders={"Month": month_name_order, "Category": ["No wx", "SHRA", TS_LEGEND_LABEL]},
+        color_discrete_map={"No wx": "#7a7a7a", "SHRA": "#3b82c4", TS_LEGEND_LABEL: "#c62828"},
+    )
+    fig_gales.update_xaxes(title_text="")
+    return fig_gales
 
 
 def build_overview_temp_dewpoint_figure_from_precomputed(
@@ -2070,6 +2460,737 @@ def build_precipitation_figures_from_precomputed(
     if bg_img_base64:
         apply_polar_background(fig_split, bg_img_base64)
     return fig_precip, fig_split
+
+
+def build_fog_low_cloud_figures_from_precomputed(
+    icao: str,
+    *,
+    month_numbers: list[int],
+    season: str,
+    year_start: int,
+    year_end: int,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+    fog_monthly_mode: str,
+    fog_hourly_mode: str,
+    fog_wind_mode: str,
+    fog_dewpoint_mode: str,
+) -> dict[str, go.Figure]:
+    payload = load_precomputed_fog_low_cloud_for_airport(icao)
+    if not payload:
+        return {}
+
+    figures: dict[str, go.Figure] = {}
+    month_name_order = month_labels_for_numbers(month_numbers)
+
+    # monthly fog/low cloud frequency
+    monthly_df = pd.DataFrame(payload.get("monthly", []))
+    if not monthly_df.empty:
+        monthly_df = monthly_df[monthly_df["mode"] == fog_monthly_mode]
+        monthly_df = filter_precomputed_rows_by_time(
+            monthly_df,
+            year_col="bom_year",
+            month_col="bom_month",
+            year_start=year_start,
+            year_end=year_end,
+            month_numbers=month_numbers,
+            season=season,
+        )
+        monthly_df = filter_precomputed_rows_by_state(
+            monthly_df,
+            enso=enso,
+            iod=iod,
+            sam=sam,
+            mjo=mjo,
+        )
+        if not monthly_df.empty:
+            monthly_df = (
+                monthly_df.groupby(["bom_year", "bom_month"], as_index=False)[
+                    ["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]
+                ]
+                .sum()
+            )
+            monthly_avg = (
+                monthly_df.groupby("bom_month", as_index=False)[["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]]
+                .mean()
+                .rename(columns={"bom_month": "month"})
+            )
+            monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+            fog_monthly = monthly_avg[["Month", "Fog"]].rename(columns={"Fog": "Count"})
+            fog_monthly["Type"] = "Fog"
+            fog_monthly["Threshold"] = None
+            low_cloud_monthly = monthly_avg.melt(
+                id_vars=["month", "Month"],
+                value_vars=["below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"],
+                var_name="Threshold",
+                value_name="Count",
+            )
+            low_cloud_monthly["Type"] = "Low cloud"
+            combined = pd.concat(
+                [
+                    fog_monthly[["Month", "Count", "Type", "Threshold"]],
+                    low_cloud_monthly[["Month", "Count", "Type", "Threshold"]],
+                ],
+                ignore_index=True,
+            )
+            fig = build_fog_low_cloud_frequency_from_combined(
+                combined,
+                "Fog/Low Cloud Frequency",
+                month_numbers,
+            )
+            figures["monthly_fog"] = fig
+
+    # hourly fog/low cloud frequency
+    hourly_df = pd.DataFrame(payload.get("hourly", []))
+    if not hourly_df.empty:
+        hourly_df = hourly_df[hourly_df["mode"] == fog_hourly_mode]
+        hourly_df = filter_precomputed_rows_by_time(
+            hourly_df,
+            year_col="bom_year",
+            month_col="bom_month",
+            year_start=year_start,
+            year_end=year_end,
+            month_numbers=month_numbers,
+            season=season,
+        )
+        hourly_df = filter_precomputed_rows_by_state(
+            hourly_df,
+            enso=enso,
+            iod=iod,
+            sam=sam,
+            mjo=mjo,
+        )
+        if not hourly_df.empty:
+            hourly_counts = (
+                hourly_df.groupby(["bom_year", "hour"], as_index=False)[
+                    ["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]
+                ]
+                .sum()
+            )
+            hourly_avg = hourly_counts.groupby("hour", as_index=False)[["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]].mean()
+            hourly_avg["Hour"] = hourly_avg["hour"].astype(int).astype(str)
+
+            threshold_order = ["below 500ft", "below 1000ft", "below 1500ft", "below 2000ft"]
+            hour_numbers = list(range(24))
+            hour_labels = [str(hour) for hour in hour_numbers]
+            hour_hover_labels = [f"{hour:02d}Z" for hour in range(24)]
+
+            low_cloud_stack = (
+                hourly_avg.melt(
+                    id_vars=["hour", "Hour"],
+                    value_vars=["below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"],
+                    var_name="Threshold",
+                    value_name="Count",
+                )
+                .pivot_table(index="Hour", columns="Threshold", values="Count", aggfunc="sum")
+                .reindex(hour_labels)
+                .fillna(0.0)
+            )
+            fog_by_hour = hourly_avg.set_index("Hour")["Fog"].reindex(hour_labels).fillna(0.0)
+
+            fig = go.Figure()
+            low_cloud_x = [hour - 0.22 for hour in hour_numbers]
+            fog_x = [hour + 0.22 for hour in hour_numbers]
+            bar_width = 0.38
+            fig.add_bar(x=low_cloud_x, y=[0.0] * len(hour_labels), showlegend=False, hoverinfo="skip", marker_color="rgba(0,0,0,0)", width=bar_width)
+            fig.add_bar(x=fog_x, y=[0.0] * len(hour_labels), showlegend=False, hoverinfo="skip", marker_color="rgba(0,0,0,0)", width=bar_width)
+
+            threshold_colors = {
+                "below 500ft": "#8b0000",
+                "below 1000ft": "#c62828",
+                "below 1500ft": "#e57373",
+                "below 2000ft": "#ef9a9a",
+            }
+            for threshold in threshold_order:
+                y_values = low_cloud_stack[threshold].astype(float).tolist() if threshold in low_cloud_stack.columns else [0.0] * len(hour_labels)
+                display_label = FOG_LOW_CLOUD_THRESHOLD_LABELS[threshold]
+                fig.add_bar(
+                    x=low_cloud_x,
+                    y=y_values,
+                    name=display_label,
+                    marker_color=threshold_colors[threshold],
+                    customdata=hour_hover_labels,
+                    width=bar_width,
+                    hovertemplate=(
+                        "Hour: %{customdata}<br>"
+                        f"{display_label}: %{{y:.2f}}<extra></extra>"
+                    ),
+                )
+
+            fig.add_bar(
+                x=fog_x,
+                y=fog_by_hour.astype(float).tolist(),
+                name="Fog",
+                marker_color="#d4af37",
+                customdata=hour_hover_labels,
+                width=bar_width,
+                hovertemplate="Hour: %{customdata}<br>Fog: %{y:.2f}<extra></extra>",
+            )
+            fig.update_layout(title="Fog/Low Cloud Frequency by Hour", barmode="stack", legend_title_text="Category")
+            fig.update_xaxes(title_text="", tickmode="array", tickvals=[0, 5, 10, 15, 20], ticktext=["00Z", "05Z", "10Z", "15Z", "20Z"], showgrid=False, range=[-0.8, 23.8])
+            fig.update_yaxes(title_text="Avg Days/Hour")
+            figures["fog_share"] = fig
+
+    # dewpoint lines
+    dewpoint_df = pd.DataFrame(payload.get("dewpoint", []))
+    if not dewpoint_df.empty:
+        dewpoint_df = dewpoint_df[dewpoint_df["mode"] == fog_dewpoint_mode]
+        dewpoint_df = filter_precomputed_rows_by_time(
+            dewpoint_df,
+            year_col="bom_year",
+            month_col="bom_month",
+            year_start=year_start,
+            year_end=year_end,
+            month_numbers=month_numbers,
+            season=season,
+        )
+        dewpoint_df = filter_precomputed_rows_by_state(
+            dewpoint_df,
+            enso=enso,
+            iod=iod,
+            sam=sam,
+            mjo=mjo,
+        )
+        if not dewpoint_df.empty:
+            agg = (
+                dewpoint_df.groupby(["bom_month", "Category"], as_index=False)[["dwpt_sum", "dwpt_count"]]
+                .sum()
+            )
+            agg = agg[agg["dwpt_count"] > 0]
+            if not agg.empty:
+                agg["AvgDWPT"] = agg["dwpt_sum"] / agg["dwpt_count"]
+                category_colors = {
+                    "Fog": "#d4af37",
+                    "2000ft - 1500ft cloud": "#ef9a9a",
+                    "1500ft - 1000ft cloud": "#e57373",
+                    "1000ft - 500ft cloud": "#c62828",
+                    "< 500ft cloud": "#8b0000",
+                }
+                fig = go.Figure()
+                for label, color in category_colors.items():
+                    masked = agg[agg["Category"] == label].copy()
+                    if masked.empty:
+                        continue
+                    monthly_avg = masked.set_index("bom_month")["AvgDWPT"].reindex(month_numbers).reset_index()
+                    monthly_avg["Month"] = monthly_avg["bom_month"].apply(lambda m: MONTH_NAMES[m - 1])
+                    fig.add_trace(go.Scatter(
+                        x=monthly_avg["Month"],
+                        y=monthly_avg["AvgDWPT"],
+                        mode="lines+markers",
+                        name=label,
+                        line=dict(color=color, width=2.5),
+                        marker=dict(size=7, color=color),
+                        connectgaps=False,
+                        hovertemplate="Month: %{x}<br>Avg Dewpoint: %{y:.1f} °C<extra>" + label + "</extra>",
+                    ))
+                if len(fig.data) > 0:
+                    fig.update_layout(title="Avg Dewpoint by Month", legend_title_text="Category")
+                    fig.update_xaxes(title_text="", categoryorder="array", categoryarray=month_name_order)
+                    fig.update_yaxes(title_text="Avg Dewpoint (°C)")
+                    figures["fog_cloud_joint"] = fig
+
+    # wind distribution plot
+    wind_df = pd.DataFrame(payload.get("wind", []))
+    if not wind_df.empty:
+        wind_df = wind_df[wind_df["mode"] == fog_wind_mode]
+        wind_df = filter_precomputed_rows_by_time(
+            wind_df,
+            year_col="bom_year",
+            month_col="bom_month",
+            year_start=year_start,
+            year_end=year_end,
+            month_numbers=month_numbers,
+            season=season,
+        )
+        wind_df = filter_precomputed_rows_by_state(
+            wind_df,
+            enso=enso,
+            iod=iod,
+            sam=sam,
+            mjo=mjo,
+        )
+        if not wind_df.empty:
+            direction_step = 10.0
+            speed_step = 1.0
+            dir_edges = np.arange(0.0, 360.0 + direction_step, direction_step)
+            dir_centers = dir_edges[:-1] + (direction_step / 2.0)
+            max_speed_bin = int(max(10, wind_df["speed_bin"].max()))
+            max_speed = max(10.0, float(math.ceil((max_speed_bin * 1.1) / 5.0) * 5.0))
+            speed_edges = np.arange(0.0, max_speed + speed_step, speed_step)
+            cutoff_pct = 0.1
+            category_colors = {
+                "Fog": "#d4af37",
+                "2000ft - 1500ft cloud": "#ef9a9a",
+                "1500ft - 1000ft cloud": "#e57373",
+                "1000ft - 500ft cloud": "#c62828",
+                "< 500ft cloud": "#8b0000",
+            }
+
+            def hex_to_rgba(hex_color: str, alpha: float) -> str:
+                color = hex_color.lstrip("#")
+                if len(color) != 6:
+                    return f"rgba(0,0,0,{alpha})"
+                red = int(color[0:2], 16)
+                green = int(color[2:4], 16)
+                blue = int(color[4:6], 16)
+                return f"rgba({red},{green},{blue},{alpha})"
+
+            def smooth_frequency_field(field: np.ndarray, passes: int = 3) -> np.ndarray:
+                out = field.astype(float).copy()
+                for _ in range(passes):
+                    out = (np.roll(out, 1, axis=1) + 2.0 * out + np.roll(out, -1, axis=1)) / 4.0
+                    padded = np.pad(out, ((1, 1), (0, 0)), mode="edge")
+                    out = (padded[:-2] + 2.0 * padded[1:-1] + padded[2:]) / 4.0
+                return out
+
+            def boundary_from_level(field: np.ndarray, level: float) -> np.ndarray:
+                boundary = np.full(len(dir_centers), np.nan)
+                for col_idx in range(len(dir_centers)):
+                    column = field[:, col_idx]
+                    hit_idx = np.where(column >= level)[0]
+                    if len(hit_idx) > 0:
+                        boundary[col_idx] = float(speed_edges[int(hit_idx.max()) + 1])
+                boundary = np.nan_to_num(boundary, nan=0.0)
+                boundary = (np.roll(boundary, 1) + 2.0 * boundary + np.roll(boundary, -1)) / 4.0
+                return boundary
+
+            fig = go.Figure()
+            traces_added = 0
+            max_plotted_speed = 0.0
+            layer_fields: dict[str, np.ndarray] = {}
+            layer_order = ["2000ft - 1500ft cloud", "1500ft - 1000ft cloud", "1000ft - 500ft cloud", "< 500ft cloud", "Fog"]
+            for label in layer_order:
+                sub = wind_df[wind_df["Category"] == label]
+                if sub.empty:
+                    continue
+
+                hist2d = np.zeros((len(speed_edges) - 1, len(dir_edges) - 1), dtype=float)
+                grouped = sub.groupby(["speed_bin", "dir_bin_10"], as_index=False)["Count"].sum()
+                for _, row in grouped.iterrows():
+                    sbin = int(row["speed_bin"])
+                    dbin = int(row["dir_bin_10"])
+                    s_idx = min(max(0, sbin), hist2d.shape[0] - 1)
+                    d_idx = ((dbin // 10) % 36)
+                    hist2d[s_idx, d_idx] += float(row["Count"])
+
+                total_obs = float(hist2d.sum())
+                if total_obs <= 0:
+                    continue
+
+                rel_field = (hist2d / total_obs) * 100.0
+                rel_field = smooth_frequency_field(rel_field, passes=3)
+                layer_fields[label] = rel_field
+                peak_rel = float(np.nanmax(rel_field)) if rel_field.size else 0.0
+                if peak_rel < cutoff_pct:
+                    continue
+
+                low = cutoff_pct
+                high = max(low, peak_rel * 0.92)
+                levels = [round(float(low), 3)] if high <= low else sorted({round(float(v), 3) for v in np.geomspace(low, high, num=6)})
+                first_for_label = True
+                for level_idx, level in enumerate(levels):
+                    boundary = boundary_from_level(rel_field, level)
+                    boundary_max = float(np.max(boundary))
+                    if boundary_max <= 0.0:
+                        continue
+                    max_plotted_speed = max(max_plotted_speed, boundary_max)
+                    theta_vals = list(dir_centers) + [float(dir_centers[0])]
+                    r_vals = list(boundary) + [float(boundary[0])]
+                    alpha = min(0.10 + level_idx * 0.07, 0.42)
+                    fig.add_trace(go.Scatterpolar(
+                        theta=theta_vals,
+                        r=r_vals,
+                        mode="lines",
+                        name=label,
+                        legendgroup=label,
+                        showlegend=first_for_label,
+                        line=dict(color=hex_to_rgba(category_colors[label], min(alpha + 0.28, 0.95)), width=1.1),
+                        fill="toself",
+                        fillcolor=hex_to_rgba(category_colors[label], alpha),
+                        hoverinfo="skip",
+                    ))
+                    first_for_label = False
+                if not first_for_label:
+                    traces_added += 1
+
+            if traces_added > 0:
+                speed_centers = speed_edges[:-1] + (speed_step / 2.0)
+                theta_mesh = np.tile(dir_centers, len(speed_centers))
+                r_mesh = np.repeat(speed_centers, len(dir_centers))
+                custom_rows: list[list[float]] = []
+                hover_order = ["Fog", "2000ft - 1500ft cloud", "1500ft - 1000ft cloud", "1000ft - 500ft cloud", "< 500ft cloud"]
+                hover_fields = {
+                    code: layer_fields.get(code, np.zeros((len(speed_centers), len(dir_centers)), dtype=float))
+                    for code in hover_order
+                }
+                for speed_idx in range(len(speed_centers)):
+                    for dir_idx in range(len(dir_centers)):
+                        custom_rows.append([
+                            float(hover_fields["Fog"][speed_idx, dir_idx]),
+                            float(hover_fields["2000ft - 1500ft cloud"][speed_idx, dir_idx]),
+                            float(hover_fields["1500ft - 1000ft cloud"][speed_idx, dir_idx]),
+                            float(hover_fields["1000ft - 500ft cloud"][speed_idx, dir_idx]),
+                            float(hover_fields["< 500ft cloud"][speed_idx, dir_idx]),
+                        ])
+                fig.add_trace(go.Scatterpolar(
+                    theta=theta_mesh,
+                    r=r_mesh,
+                    mode="markers",
+                    name="",
+                    showlegend=False,
+                    marker=dict(size=14, color="rgba(0,0,0,0.001)"),
+                    customdata=custom_rows,
+                    hovertemplate=(
+                        "Direction: %{theta:.0f}°<br>"
+                        "Wind Speed: %{r:.1f} kt<br>"
+                        "Fog: %{customdata[0]:.3f}%<br>"
+                        "2000ft - 1500ft cloud: %{customdata[1]:.3f}%<br>"
+                        "1500ft - 1000ft cloud: %{customdata[2]:.3f}%<br>"
+                        "1000ft - 500ft cloud: %{customdata[3]:.3f}%<br>"
+                        "< 500ft cloud: %{customdata[4]:.3f}%<extra></extra>"
+                    ),
+                ))
+
+                display_max_speed = max(10.0, float(math.ceil((max_plotted_speed * 1.1) / 5.0) * 5.0))
+                bg_img_base64 = None
+                try:
+                    airport_lat = COORDS_DF.loc[icao, "LAT"]
+                    airport_lon = COORDS_DF.loc[icao, "LONG"]
+                    bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+                except Exception:
+                    pass
+                fig.update_layout(
+                    title="Wind Direction/Strength",
+                    polar=dict(
+                        bgcolor="rgba(0,0,0,0)",
+                        angularaxis=dict(direction="clockwise", period=360),
+                        radialaxis=dict(angle=90, tickangle=90, ticksuffix=" kt", range=[0, display_max_speed]),
+                    ),
+                    legend=dict(title_text="Category", groupclick="togglegroup"),
+                    margin=dict(l=36, r=36, t=52, b=22),
+                )
+                if bg_img_base64:
+                    apply_polar_background(fig, bg_img_base64)
+                figures["cloud_distribution"] = fig
+
+    return figures
+
+
+def build_smoke_dust_figures_from_precomputed(
+    icao: str,
+    *,
+    month_numbers: list[int],
+    season: str,
+    year_start: int,
+    year_end: int,
+    enso: str,
+    iod: str,
+    sam: str,
+    mjo: str,
+) -> dict[str, go.Figure]:
+    payload = load_precomputed_smoke_dust_for_airport(icao)
+    if not payload:
+        return {}
+
+    figures: dict[str, go.Figure] = {}
+    month_name_order = month_labels_for_numbers(month_numbers)
+    smoke_tokens = ["FU", "DU", "SA", "VA"]
+    phenom_colors = {
+        "FU": "#7a7a7a",
+        "DU": "#EF553B",
+        "SA": "#00CC96",
+        "VA": "#AB63FA",
+    }
+
+    monthly_df = pd.DataFrame(payload.get("monthly", []))
+    if not monthly_df.empty:
+        monthly_df = filter_precomputed_rows_by_time(
+            monthly_df,
+            year_col="year",
+            month_col="month",
+            year_start=year_start,
+            year_end=year_end,
+            month_numbers=month_numbers,
+            season=season,
+        )
+        monthly_df = filter_precomputed_rows_by_state(monthly_df, enso=enso, iod=iod, sam=sam, mjo=mjo)
+        if not monthly_df.empty:
+            monthly_smoke = monthly_df.groupby(["month", "Phenomenon"], as_index=False)["Count"].mean()
+            monthly_smoke["Month"] = monthly_smoke["month"].apply(lambda m: MONTH_NAMES[m - 1])
+            monthly_smoke["Month"] = pd.Categorical(monthly_smoke["Month"], categories=month_name_order, ordered=True)
+            monthly_smoke = monthly_smoke.sort_values(["Month", "Phenomenon"])
+            fig = px.bar(
+                monthly_smoke,
+                x="Month",
+                y="Count",
+                color="Phenomenon",
+                barmode="group",
+                labels={"Count": "Avg Obs/Month", "Phenomenon": "Type"},
+                title="Monthly Smoke/Dust Frequency by Phenomenon",
+                color_discrete_map=phenom_colors,
+                category_orders={"Month": month_name_order, "Phenomenon": smoke_tokens},
+            )
+            fig.update_xaxes(title_text="")
+            figures["monthly_smoke"] = fig
+
+    hourly_df = pd.DataFrame(payload.get("hourly", []))
+    if not hourly_df.empty:
+        hourly_df = filter_precomputed_rows_by_time(
+            hourly_df,
+            year_col="year",
+            month_col="month",
+            year_start=year_start,
+            year_end=year_end,
+            month_numbers=month_numbers,
+            season=season,
+        )
+        hourly_df = filter_precomputed_rows_by_state(hourly_df, enso=enso, iod=iod, sam=sam, mjo=mjo)
+        if not hourly_df.empty:
+            hourly = hourly_df.groupby(["hour", "Phenomenon"], as_index=False)["Count"].sum()
+            fig = px.bar(
+                hourly,
+                x="hour",
+                y="Count",
+                color="Phenomenon",
+                barmode="group",
+                labels={"Count": "Observations", "Phenomenon": "Type"},
+                title="Hourly Smoke/Dust Frequency by Phenomenon",
+                color_discrete_map=phenom_colors,
+                category_orders={"Phenomenon": smoke_tokens},
+            )
+            fig.update_xaxes(title_text="", tickmode="array", tickvals=[0, 5, 10, 15, 20], ticktext=["00Z", "05Z", "10Z", "15Z", "20Z"])
+            figures["hourly_smoke"] = fig
+
+    scatter_df = pd.DataFrame(payload.get("scatter", []))
+    if not scatter_df.empty:
+        scatter_df = filter_precomputed_rows_by_time(
+            scatter_df,
+            year_col="year",
+            month_col="month",
+            year_start=year_start,
+            year_end=year_end,
+            month_numbers=month_numbers,
+            season=season,
+        )
+        scatter_df = filter_precomputed_rows_by_state(scatter_df, enso=enso, iod=iod, sam=sam, mjo=mjo)
+        if not scatter_df.empty:
+            fig = go.Figure()
+            for code in smoke_tokens:
+                sub = scatter_df[scatter_df["Phenomenon"] == code]
+                if sub.empty:
+                    continue
+                fig.add_trace(go.Scatter(
+                    x=sub["DWPT"],
+                    y=sub["WND_SPD"],
+                    mode="markers",
+                    name=code,
+                    legendgroup=code,
+                    marker=dict(color=phenom_colors[code], size=7, opacity=0.65),
+                    hovertemplate="Type: %{text}<br>Dew Point: %{x:.1f} °C<br>Wind Speed: %{y:.1f} kt<extra></extra>",
+                    text=[code] * len(sub),
+                ))
+                fit_df = sub[["DWPT", "WND_SPD"]].dropna()
+                if len(fit_df) >= 2 and fit_df["DWPT"].nunique() > 1:
+                    x_mean = float(fit_df["DWPT"].mean())
+                    y_mean = float(fit_df["WND_SPD"].mean())
+                    var_x = float(((fit_df["DWPT"] - x_mean) ** 2).sum())
+                    if var_x > 0:
+                        cov_xy = float(((fit_df["DWPT"] - x_mean) * (fit_df["WND_SPD"] - y_mean)).sum())
+                        slope = cov_xy / var_x
+                        intercept = y_mean - slope * x_mean
+                        x_min = float(fit_df["DWPT"].min())
+                        x_max = float(fit_df["DWPT"].max())
+                        y_min = slope * x_min + intercept
+                        y_max = slope * x_max + intercept
+                        fig.add_trace(go.Scatter(
+                            x=[x_min, x_max],
+                            y=[y_min, y_max],
+                            mode="lines",
+                            name=f"{code} fit",
+                            legendgroup=code,
+                            showlegend=False,
+                            line=dict(color=phenom_colors[code], width=2),
+                            hovertemplate=f"{code} fit<br>Dew Point: %{{x:.1f}} °C<br>Wind Speed: %{{y:.1f}} kt<extra></extra>",
+                        ))
+            if len(fig.data) > 0:
+                fig.update_layout(
+                    title="Wind Speed vs Dew Point (Dust/Smoke)",
+                    xaxis_title="Dew Point (°C)",
+                    yaxis_title="Wind Speed (kt)",
+                    legend=dict(title_text="Phenomenon", groupclick="togglegroup"),
+                )
+                figures["scatter_wind_dewpt"] = fig
+
+    radial_df = pd.DataFrame(payload.get("radial", []))
+    if not radial_df.empty:
+        radial_df = filter_precomputed_rows_by_time(
+            radial_df,
+            year_col="year",
+            month_col="month",
+            year_start=year_start,
+            year_end=year_end,
+            month_numbers=month_numbers,
+            season=season,
+        )
+        radial_df = filter_precomputed_rows_by_state(radial_df, enso=enso, iod=iod, sam=sam, mjo=mjo)
+        if not radial_df.empty:
+            scatter_polar = go.Figure()
+            direction_step = 10.0
+            max_speed = 40.0
+            speed_step = 1.0
+            dir_edges = np.arange(0.0, 360.0 + direction_step, direction_step)
+            dir_centers = dir_edges[:-1] + (direction_step / 2.0)
+            speed_edges = np.arange(0.0, max_speed + speed_step, speed_step)
+            cutoff_pct = 0.06
+
+            def hex_to_rgba(hex_color: str, alpha: float) -> str:
+                color = hex_color.lstrip("#")
+                if len(color) != 6:
+                    return f"rgba(0,0,0,{alpha})"
+                r = int(color[0:2], 16)
+                g = int(color[2:4], 16)
+                b = int(color[4:6], 16)
+                return f"rgba({r},{g},{b},{alpha})"
+
+            def smooth_frequency_field(field: np.ndarray, passes: int = 3) -> np.ndarray:
+                out = field.astype(float).copy()
+                for _ in range(passes):
+                    out = (np.roll(out, 1, axis=1) + 2.0 * out + np.roll(out, -1, axis=1)) / 4.0
+                    padded = np.pad(out, ((1, 1), (0, 0)), mode="edge")
+                    out = (padded[:-2] + 2.0 * padded[1:-1] + padded[2:]) / 4.0
+                return out
+
+            def boundary_from_level(field: np.ndarray, level: float) -> np.ndarray:
+                boundary = np.full(len(dir_centers), np.nan)
+                for col_idx in range(len(dir_centers)):
+                    column = field[:, col_idx]
+                    hit_idx = np.where(column >= level)[0]
+                    if len(hit_idx) > 0:
+                        boundary[col_idx] = float(speed_edges[int(hit_idx.max()) + 1])
+                boundary = np.nan_to_num(boundary, nan=0.0)
+                boundary = (np.roll(boundary, 1) + 2.0 * boundary + np.roll(boundary, -1)) / 4.0
+                return boundary
+
+            traces_added = 0
+            max_plotted_speed = 0.0
+            legend_order = {code: idx for idx, code in enumerate(smoke_tokens)}
+            layer_fields: dict[str, np.ndarray] = {}
+            plotted_codes: list[str] = []
+            layer_order = ["DU", "FU", "SA", "VA"]
+            for code in layer_order:
+                sub = radial_df[radial_df["Phenomenon"] == code]
+                if sub.empty:
+                    continue
+
+                hist2d = np.zeros((len(speed_edges) - 1, len(dir_edges) - 1), dtype=float)
+                grouped = sub.groupby(["speed_bin", "dir_bin_10"], as_index=False)["Count"].sum()
+                for _, row in grouped.iterrows():
+                    sbin = int(row["speed_bin"])
+                    dbin = int(row["dir_bin_10"])
+                    if sbin < 0:
+                        continue
+                    s_idx = min(sbin, hist2d.shape[0] - 1)
+                    d_idx = ((dbin // 10) % 36)
+                    hist2d[s_idx, d_idx] += float(row["Count"])
+
+                total_obs = float(hist2d.sum())
+                if total_obs <= 0:
+                    continue
+                rel_field = (hist2d / total_obs) * 100.0
+                rel_field = smooth_frequency_field(rel_field, passes=3)
+                layer_fields[code] = rel_field
+                peak_rel = float(np.nanmax(rel_field)) if rel_field.size else 0.0
+                if peak_rel < cutoff_pct:
+                    continue
+
+                low = max(cutoff_pct, peak_rel * 0.08)
+                high = max(low, peak_rel * 0.92)
+                levels = sorted({round(float(level), 3) for level in np.geomspace(low, high, num=6)})
+
+                first_for_code = True
+                for level_idx, level in enumerate(levels):
+                    boundary = boundary_from_level(rel_field, level)
+                    boundary_max = float(np.max(boundary))
+                    if boundary_max <= 0.0:
+                        continue
+                    max_plotted_speed = max(max_plotted_speed, boundary_max)
+                    theta_vals = list(dir_centers) + [float(dir_centers[0])]
+                    r_vals = list(boundary) + [float(boundary[0])]
+                    alpha = min(0.10 + level_idx * 0.07, 0.42)
+                    scatter_polar.add_trace(go.Scatterpolar(
+                        theta=theta_vals,
+                        r=r_vals,
+                        mode="lines",
+                        name=code,
+                        legendgroup=code,
+                        showlegend=first_for_code,
+                        legendrank=legend_order.get(code, 999),
+                        meta={"legendColor": phenom_colors[code]},
+                        line=dict(color=hex_to_rgba(phenom_colors[code], min(alpha + 0.28, 0.95)), width=1.1),
+                        fill="toself",
+                        fillcolor=hex_to_rgba(phenom_colors[code], alpha),
+                        hoverinfo="skip",
+                    ))
+                    first_for_code = False
+
+                if not first_for_code:
+                    traces_added += 1
+                    plotted_codes.append(code)
+
+            if traces_added > 0:
+                speed_centers = speed_edges[:-1] + (speed_step / 2.0)
+                theta_mesh = np.tile(dir_centers, len(speed_centers))
+                r_mesh = np.repeat(speed_centers, len(dir_centers))
+                hover_order = plotted_codes
+                hover_fields = {
+                    code: layer_fields.get(code, np.zeros((len(speed_centers), len(dir_centers)), dtype=float))
+                    for code in hover_order
+                }
+                custom_rows: list[list[float]] = []
+                for speed_idx in range(len(speed_centers)):
+                    for dir_idx in range(len(dir_centers)):
+                        custom_rows.append([float(hover_fields[code][speed_idx, dir_idx]) for code in hover_order])
+
+                hover_lines = ["Direction: %{theta:.0f}°", "Wind Speed: %{r:.1f} kt"]
+                hover_lines.extend([f"{code}: %{{customdata[{idx}]:.3f}}%" for idx, code in enumerate(hover_order)])
+                hover_template = "<br>".join(hover_lines) + "<extra></extra>"
+
+                scatter_polar.add_trace(go.Scatterpolar(
+                    theta=theta_mesh,
+                    r=r_mesh,
+                    mode="markers",
+                    name="",
+                    showlegend=False,
+                    marker=dict(size=14, color="rgba(0,0,0,0.001)"),
+                    customdata=custom_rows,
+                    hovertemplate=hover_template,
+                ))
+
+                display_max_speed = max(10.0, float(math.ceil((max_plotted_speed * 1.1) / 5.0) * 5.0))
+                bg_img_base64 = None
+                try:
+                    airport_lat = COORDS_DF.loc[icao, "LAT"]
+                    airport_lon = COORDS_DF.loc[icao, "LONG"]
+                    bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+                except Exception:
+                    pass
+                scatter_polar.update_layout(
+                    title="Wind Direction/Strength Relative Frequency (Smoothed)",
+                    polar=dict(
+                        bgcolor="rgba(0,0,0,0)",
+                        angularaxis=dict(direction="clockwise", period=360),
+                        radialaxis=dict(angle=90, tickangle=90, ticksuffix=" kt", range=[0, display_max_speed]),
+                    ),
+                    legend=dict(title_text="Phenomenon", groupclick="togglegroup"),
+                    margin=dict(l=36, r=36, t=52, b=22),
+                )
+                if bg_img_base64:
+                    apply_polar_background(scatter_polar, bg_img_base64)
+                figures["radial_scatter_dust"] = scatter_polar
+
+    return figures
 
 
 def build_placeholder_figure(title: str, _subtitle: str = NO_DATA_MESSAGE) -> go.Figure:
@@ -3290,6 +4411,261 @@ def charts(
                     elapsed_ms = int((time.perf_counter() - started) * 1000)
                     log_memory_phase(
                         "charts.precipitation_precomputed",
+                        section=section,
+                        icao=icao,
+                        figures=len(figures),
+                        elapsed_ms=elapsed_ms,
+                    )
+                    return {
+                        "section": section,
+                        "figures": figures,
+                    }
+
+    can_use_precomputed_wind = (
+        section == "wind"
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_wind:
+        requested_wind_ids = {
+            fid for fid in requested_figure_ids if fid in {"wind_rose", "gale_weather_split"}
+        }
+        if not requested_figure_ids:
+            requested_wind_ids = {"wind_rose", "gale_weather_split"}
+
+        if requested_wind_ids:
+            figures: list[dict[str, Any]] = []
+            y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+
+            if "wind_rose" in requested_wind_ids:
+                fig_rose = build_overview_wind_rose_figure_from_precomputed(
+                    icao,
+                    month_numbers=month_number_order,
+                    season=season,
+                    year_start=yearStart,
+                    year_end=yearEnd,
+                    enso=enso,
+                    iod=iod,
+                    sam=sam,
+                    mjo=mjo,
+                )
+                if fig_rose is not None:
+                    apply_common_layout(fig_rose)
+                    # Wind-tab specific spacing to mirror the live path.
+                    fig_rose.update_layout(
+                        margin=dict(l=62, r=DEFAULT_LEGEND_ENTRY_WIDTH + LEGEND_MARGIN_PADDING, t=48, b=22),
+                        polar=dict(
+                            domain=dict(x=[0.14, 0.92], y=[0.0, 0.93]),
+                            bgcolor="rgba(0,0,0,0)",
+                            angularaxis=dict(direction="clockwise", period=360),
+                        ),
+                    )
+                    figures.append(fig_payload("wind_rose", fig_rose))
+
+            if "gale_weather_split" in requested_wind_ids:
+                fig_gales = build_wind_gale_weather_figure_from_precomputed(
+                    icao,
+                    month_numbers=month_number_order,
+                    season=season,
+                    year_start=yearStart,
+                    year_end=yearEnd,
+                    enso=enso,
+                    iod=iod,
+                    sam=sam,
+                    mjo=mjo,
+                )
+                if fig_gales is not None:
+                    apply_common_layout(fig_gales, height=380)
+                    apply_frequency_panel_layout(fig_gales)
+                    if "gale_weather_split" in y_ceilings:
+                        fig_gales.update_yaxes(range=[0, float(y_ceilings["gale_weather_split"])], autorange=False)
+                    figures.append(fig_payload("gale_weather_split", fig_gales))
+
+            if figures:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                log_memory_phase(
+                    "charts.wind_precomputed",
+                    section=section,
+                    icao=icao,
+                    figures=len(figures),
+                    elapsed_ms=elapsed_ms,
+                )
+                return {
+                    "section": section,
+                    "figures": figures,
+                }
+
+    can_use_precomputed_fog_low_cloud = (
+        section == "fog_low_cloud"
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_fog_low_cloud:
+        requested_fog_ids = {
+            fid for fid in requested_figure_ids if fid in {"monthly_fog", "fog_share", "cloud_distribution", "fog_cloud_joint"}
+        }
+        if not requested_figure_ids:
+            requested_fog_ids = {"monthly_fog", "fog_share", "cloud_distribution", "fog_cloud_joint"}
+
+        if requested_fog_ids:
+            mode_label_map = {
+                "all": "All Days",
+                "rain": "Rain Days",
+                "non_rain": "Non-rain Days",
+            }
+            selected_monthly_label = mode_label_map.get(fogMonthlyMode, "All Days")
+            selected_hourly_label = mode_label_map.get(fogHourlyMode, "All Days")
+            selected_wind_label = mode_label_map.get(fogWindMode, "All Days")
+            selected_dewpoint_label = mode_label_map.get(fogDewpointMode, "All Days")
+
+            built = build_fog_low_cloud_figures_from_precomputed(
+                icao,
+                month_numbers=month_number_order,
+                season=season,
+                year_start=yearStart,
+                year_end=yearEnd,
+                enso=enso,
+                iod=iod,
+                sam=sam,
+                mjo=mjo,
+                fog_monthly_mode=fogMonthlyMode,
+                fog_hourly_mode=fogHourlyMode,
+                fog_wind_mode=fogWindMode,
+                fog_dewpoint_mode=fogDewpointMode,
+            )
+
+            if built:
+                y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+                figures: list[dict[str, Any]] = []
+
+                if "monthly_fog" in requested_fog_ids:
+                    fig = built.get("monthly_fog")
+                    if fig is None:
+                        fig = build_placeholder_figure(f"Fog/Low Cloud Frequency ({selected_monthly_label})")
+                    apply_common_layout(fig)
+                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                    apply_frequency_panel_layout(fig)
+                    if "monthly_fog" in y_ceilings:
+                        fig.update_yaxes(range=[0, float(y_ceilings["monthly_fog"])], autorange=False)
+                    figures.append(fig_payload("monthly_fog", fig))
+
+                if "fog_share" in requested_fog_ids:
+                    fig = built.get("fog_share")
+                    if fig is None:
+                        fig = build_placeholder_figure(f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})")
+                    apply_common_layout(fig)
+                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                    apply_frequency_panel_layout(fig)
+                    if "fog_share" in y_ceilings:
+                        fig.update_yaxes(range=[0, float(y_ceilings["fog_share"])], autorange=False)
+                    figures.append(fig_payload("fog_share", fig))
+
+                if "cloud_distribution" in requested_fog_ids:
+                    fig = built.get("cloud_distribution")
+                    if fig is None:
+                        fig = build_placeholder_figure(f"Wind Direction/Strength ({selected_wind_label})")
+                    apply_common_layout(fig)
+                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=52, title_text="Category", groupclick="togglegroup", bgcolor="rgba(255,255,255,0.92)")
+                    figures.append(fig_payload("cloud_distribution", fig))
+
+                if "fog_cloud_joint" in requested_fog_ids:
+                    fig = built.get("fog_cloud_joint")
+                    if fig is None:
+                        fig = build_placeholder_figure(f"Avg Dewpoint by Month ({selected_dewpoint_label})")
+                    apply_common_layout(fig)
+                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                    apply_frequency_panel_layout(fig)
+                    if "fog_cloud_joint_min" in y_ceilings and "fog_cloud_joint_max" in y_ceilings:
+                        fig.update_yaxes(range=[float(y_ceilings["fog_cloud_joint_min"]), float(y_ceilings["fog_cloud_joint_max"])], autorange=False)
+                    figures.append(fig_payload("fog_cloud_joint", fig))
+
+                if figures:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    log_memory_phase(
+                        "charts.fog_low_cloud_precomputed",
+                        section=section,
+                        icao=icao,
+                        figures=len(figures),
+                        elapsed_ms=elapsed_ms,
+                    )
+                    return {
+                        "section": section,
+                        "figures": figures,
+                    }
+
+    can_use_precomputed_smoke_dust = (
+        section == "smoke_dust"
+        and hourStart == 0
+        and hourEnd == 23
+        and (not invertHour)
+    )
+    if can_use_precomputed_smoke_dust:
+        requested_smoke_ids = {
+            fid for fid in requested_figure_ids if fid in {"monthly_smoke", "hourly_smoke", "radial_scatter_dust", "scatter_wind_dewpt"}
+        }
+        if not requested_figure_ids:
+            requested_smoke_ids = {"monthly_smoke", "hourly_smoke", "radial_scatter_dust", "scatter_wind_dewpt"}
+
+        if requested_smoke_ids:
+            built = build_smoke_dust_figures_from_precomputed(
+                icao,
+                month_numbers=month_number_order,
+                season=season,
+                year_start=yearStart,
+                year_end=yearEnd,
+                enso=enso,
+                iod=iod,
+                sam=sam,
+                mjo=mjo,
+            )
+
+            if built:
+                y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+                figures: list[dict[str, Any]] = []
+
+                if "monthly_smoke" in requested_smoke_ids:
+                    fig = built.get("monthly_smoke")
+                    if fig is None:
+                        fig = build_placeholder_figure("Monthly Smoke/Dust Frequency by Phenomenon")
+                    apply_common_layout(fig)
+                    apply_frequency_panel_layout(fig)
+                    fig.update_layout(margin=dict(l=36, r=DEFAULT_LEGEND_ENTRY_WIDTH + LEGEND_MARGIN_PADDING, t=36, b=8))
+                    if "monthly_smoke" in y_ceilings:
+                        fig.update_yaxes(range=[0, float(y_ceilings["monthly_smoke"])], autorange=False)
+                    figures.append(fig_payload("monthly_smoke", fig))
+
+                if "hourly_smoke" in requested_smoke_ids:
+                    fig = built.get("hourly_smoke")
+                    if fig is None:
+                        fig = build_placeholder_figure("Hourly Smoke/Dust Frequency by Phenomenon")
+                    apply_common_layout(fig)
+                    apply_frequency_panel_layout(fig)
+                    if "hourly_smoke" in y_ceilings:
+                        fig.update_yaxes(range=[0, float(y_ceilings["hourly_smoke"])], autorange=False)
+                    figures.append(fig_payload("hourly_smoke", fig))
+
+                if "radial_scatter_dust" in requested_smoke_ids:
+                    fig = built.get("radial_scatter_dust")
+                    if fig is None:
+                        fig = build_placeholder_figure("Wind Direction/Strength Relative Frequency (Smoothed)")
+                    apply_common_layout(fig)
+                    figures.append(fig_payload("radial_scatter_dust", fig))
+
+                if "scatter_wind_dewpt" in requested_smoke_ids:
+                    fig = built.get("scatter_wind_dewpt")
+                    if fig is None:
+                        fig = build_placeholder_figure("Wind Speed vs Dew Point (Dust/Smoke)")
+                    apply_common_layout(fig)
+                    if "scatter_wind_dewpt" in y_ceilings:
+                        fig.update_yaxes(range=[0, float(y_ceilings["scatter_wind_dewpt"])], autorange=False)
+                    figures.append(fig_payload("scatter_wind_dewpt", fig))
+
+                if figures:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    log_memory_phase(
+                        "charts.smoke_dust_precomputed",
                         section=section,
                         icao=icao,
                         figures=len(figures),

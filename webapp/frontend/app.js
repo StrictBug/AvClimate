@@ -2618,6 +2618,25 @@ async function drawCharts(figures, section = state.displayedSection) {
 
 let pendingFetch = null;
 let hasShownInitialLoading = false;
+let fetchDebounceTimer = null;
+const DRIVER_FETCH_DEBOUNCE_MS = 320;
+
+function scheduleFetchCharts(delayMs = 0) {
+  if (fetchDebounceTimer) {
+    clearTimeout(fetchDebounceTimer);
+    fetchDebounceTimer = null;
+  }
+
+  if (delayMs <= 0) {
+    fetchCharts();
+    return;
+  }
+
+  fetchDebounceTimer = setTimeout(() => {
+    fetchDebounceTimer = null;
+    fetchCharts();
+  }, delayMs);
+}
 
 async function fetchCharts() {
   if (!validateRanges()) {
@@ -2757,7 +2776,7 @@ function wireControls() {
   });
 
   [els.enso, els.iod, els.sam, els.mjo].forEach((el) => {
-    el.addEventListener("change", fetchCharts);
+    el.addEventListener("change", () => scheduleFetchCharts(DRIVER_FETCH_DEBOUNCE_MS));
   });
 
   [

@@ -26,6 +26,14 @@ artifacts/
 !statistics/precomputed/overview_temp_dewpoint/*.json
 !statistics/precomputed/overview_wind_rose/
 !statistics/precomputed/overview_wind_rose/*.json
+!statistics/precomputed/wind_gale_monthly/
+!statistics/precomputed/wind_gale_monthly/*.json
+!statistics/precomputed/fog_low_cloud/
+!statistics/precomputed/fog_low_cloud/*.json
+!statistics/precomputed/fog_low_cloud/*.json.gz
+!statistics/precomputed/smoke_dust/
+!statistics/precomputed/smoke_dust/*.json
+!statistics/precomputed/smoke_dust/*.json.gz
 !statistics/precomputed/precipitation/
 !statistics/precomputed/precipitation/*.json
 
