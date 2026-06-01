@@ -254,7 +254,7 @@ body {
 
 .chart-card {
   --chart-toolbar-top: 5px;
-  background: #e2e2e2;
+  background: #d7dbe1;
   border: 1px solid #bfc5cc;
   border-radius: 4px;
   padding: 3px 5px;
@@ -363,6 +363,7 @@ body {
   min-height: 220px;
   flex: 1 1 auto;
   min-width: 0;
+  background: #d7dbe1;
 }
 
 .chart-legend {
