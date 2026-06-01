@@ -1,0 +1,46 @@
+# --- DATA FILTERS (Critical for your 5GB file) ---
+# Never upload the raw or processed data to GitHub
+*.csv
+*.json
+*.zip
+temp/
+
+# Runtime CSVs required by backend in production
+!aerodrome_lat_long.csv
+!climatedrivers.csv
+
+# Parquet datasets are kept local and delivered via bootstrap archives at deploy time.
+data/by_icao/
+data/lightning_by_icao/
+artifacts/
+
+# Precomputed chart artifacts are generated at container build time (not stored in git)
+statistics/precomputed/
+
+# --- PYTHON SETTINGS ---
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments (always keep these local)
+.venv/
+venv/
+ENV/
+env/
+
+# --- STREAMLIT & DASHBOARD ---
+# Streamlit's internal credentials and config
+.streamlit/
+
+# --- OPERATING SYSTEM ---
+# macOS specific
+.DS_Store
+# Windows specific
+Thumbs.db
+desktop.ini
+
+# --- IDE SETTINGS ---
+.vscode/
+.idea/
+

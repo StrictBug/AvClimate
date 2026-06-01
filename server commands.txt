@@ -1,0 +1,53 @@
+# To start server
+source .venv/bin/activate
+python -m uvicorn webapp.backend.main:app --host 0.0.0.0 --port 8000
+
+# Auto reload during development
+python -m uvicorn webapp.backend.main:app --reload --reload-dir webapp --host 0.0.0.0 --port 8000
+
+#If it says url is already in use
+lsof -ti :8000 | xargs -r kill
+
+#push updates to main
+git add .
+git commit -m "Updates"
+git push origin main
+
+# Render single-service deploy (frontend + API on same URL)
+# 1) Push to main
+# 2) In Render: New + > Blueprint, select this repo
+# 3) It will use render.yaml and deploy /api + frontend together
+
+# generate precomputed artifacts
+cd /workspaces/AvClimate
+source .venv/bin/activate
+python scripts/helpers/precompute_y_ceilings.py
+python scripts/helpers/precompute_overview_fog_monthly.py
+python scripts/helpers/precompute_overview_rain_thunder_monthly.py
+python scripts/helpers/precompute_overview_temp_dewpoint_monthly.py
+python scripts/helpers/precompute_overview_wind_rose.py
+python scripts/helpers/precompute_wind_gale_monthly.py
+python scripts/helpers/precompute_fog_low_cloud.py
+python scripts/helpers/precompute_smoke_dust.py
+
+#verify generated precomputed artifacts
+ls -lh statistics/y_ceilings_by_icao.json statistics/overview_fog_monthly_by_icao.json statistics/overview_rain_thunder_monthly_by_icao.json statistics/overview_temp_dewpoint_by_icao.json statistics/overview_wind_rose_by_icao.json
+
+# Live monitor for fog/smoke precompute progress
+# Shows true MB with 3 decimals and percent complete.
+while true; do clear; bash /workspaces/AvClimate/scripts/helpers/watch_precompute_progress.sh; sleep 10; done
+# Package parquet data archives for no-LFS deploy flow
+./scripts/helpers/package_data_archives.sh
+
+# Create/update a GitHub release and upload archive assets (same GitHub account, no new account needed)
+TAG=data-v1
+gh release create "$TAG" --repo StrictBug/AvClimate --title "Data $TAG" --notes "Parquet data archives for Render bootstrap" || true
+gh release upload "$TAG" artifacts/by_icao.tar.gz artifacts/lightning_by_icao.tar.gz artifacts/data_archives.sha256 --repo StrictBug/AvClimate --clobber
+
+# Check archive checksums for Render env vars
+cat artifacts/data_archives.sha256
+
+# Render env var examples
+# AVCLIMATE_RELEASE_BASE_URL=https://github.com/StrictBug/AvClimate/releases/download/data-v1
+# AVCLIMATE_BY_ICAO_SHA256=<sha256 from data_archives.sha256>
+# AVCLIMATE_LIGHTNING_SHA256=<sha256 from data_archives.sha256>
