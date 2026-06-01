@@ -631,6 +631,61 @@ function getTraceLegendColor(trace) {
   return "#5f6f8d";
 }
 
+function parseColorToRgb(color) {
+  if (typeof color !== "string") {
+    return null;
+  }
+  const trimmed = color.trim();
+  if (!trimmed.length) {
+    return null;
+  }
+
+  const hex = trimmed.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hex) {
+    let value = hex[1];
+    if (value.length === 3) {
+      value = value.split("").map((c) => c + c).join("");
+    }
+    return {
+      r: parseInt(value.slice(0, 2), 16),
+      g: parseInt(value.slice(2, 4), 16),
+      b: parseInt(value.slice(4, 6), 16),
+    };
+  }
+
+  const rgb = trimmed.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgb) {
+    return {
+      r: Math.max(0, Math.min(255, Number(rgb[1]))),
+      g: Math.max(0, Math.min(255, Number(rgb[2]))),
+      b: Math.max(0, Math.min(255, Number(rgb[3]))),
+    };
+  }
+
+  return null;
+}
+
+function relativeLuminance({ r, g, b }) {
+  const toLinear = (v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  return (0.2126 * toLinear(r)) + (0.7152 * toLinear(g)) + (0.0722 * toLinear(b));
+}
+
+function contrastAwareErrorBarColor(trace, alpha = 0.96) {
+  const rgb = parseColorToRgb(getTraceLegendColor(trace));
+  if (!rgb) {
+    return `rgba(17,24,39,${alpha})`;
+  }
+  const lum = relativeLuminance(rgb);
+  // Dark bars/lines -> white error bars, light bars/lines -> near-black error bars.
+  if (lum < 0.42) {
+    return `rgba(255,255,255,${alpha})`;
+  }
+  return `rgba(17,24,39,${alpha})`;
+}
+
 function isTraceVisible(trace) {
   return trace?.visible !== false && trace?.visible !== "legendonly";
 }
@@ -1316,9 +1371,9 @@ function buildStrictValueErrorOverlayTraces(host) {
           arrayminus: minus,
           symmetric: false,
           visible: true,
-          thickness: 1,
-          width: 2,
-          color: "rgba(51, 82, 133, 0.7)",
+          thickness: 1.8,
+          width: 5,
+          color: contrastAwareErrorBarColor(trace),
         },
         meta: {
           errorBarOverlay: true,
@@ -1370,9 +1425,9 @@ function buildStrictValueErrorOverlayTraces(host) {
       }),
       symmetric: false,
       visible: true,
-      thickness: 1,
-      width: 2,
-      color: "rgba(51, 82, 133, 0.7)",
+      thickness: 1.8,
+      width: 5,
+      color: contrastAwareErrorBarColor(trace),
     };
 
     if (trace.type === "bar" && useBarOverlaysForBars) {
@@ -1559,9 +1614,9 @@ function buildStackComponentOverlayTraces(host) {
         arrayminus: minus,
         symmetric: false,
         visible: true,
-        thickness: 1,
-        width: 2,
-        color: "rgba(51, 82, 133, 0.85)",
+        thickness: 1.8,
+        width: 5,
+        color: contrastAwareErrorBarColor(trace),
       },
       meta: {
         errorBarOverlay: true,
@@ -1650,9 +1705,9 @@ function buildStackOverlayTraces(host) {
         }),
         symmetric: false,
         visible: true,
-        thickness: 1,
-        width: 2,
-        color: "rgba(51, 82, 133, 0.78)",
+        thickness: 1.8,
+        width: 5,
+        color: "rgba(17,24,39,0.96)",
       },
       meta: {
         errorBarOverlay: true,
@@ -1870,9 +1925,9 @@ function applyTraceErrorBars(trace) {
       type: "data",
       array: yStdArray,
       visible: true,
-      thickness: 1,
-      width: 2,
-      color: "rgba(51, 82, 133, 0.55)",
+      thickness: 1.8,
+      width: 5,
+      color: contrastAwareErrorBarColor(trace),
     };
   } else {
     delete trace.error_y;
@@ -1887,9 +1942,9 @@ function applyTraceErrorBars(trace) {
       type: "data",
       array: xStdArray,
       visible: true,
-      thickness: 1,
-      width: 2,
-      color: "rgba(51, 82, 133, 0.45)",
+      thickness: 1.8,
+      width: 5,
+      color: contrastAwareErrorBarColor(trace, 0.9),
     };
   } else {
     delete trace.error_x;
@@ -2066,9 +2121,9 @@ function applyHostErrorBars(host) {
       }),
       symmetric: false,
       visible: true,
-      thickness: 1,
-      width: 2,
-      color: "rgba(51, 82, 133, 0.7)",
+      thickness: 1.8,
+      width: 5,
+      color: contrastAwareErrorBarColor(trace),
     };
 
     const update = {
@@ -2091,9 +2146,9 @@ function applyHostErrorBars(host) {
           array: xStdArray.slice(0, xCount),
           symmetric: true,
           visible: true,
-          thickness: 1,
-          width: 2,
-          color: "rgba(51, 82, 133, 0.55)",
+          thickness: 1.8,
+          width: 5,
+          color: contrastAwareErrorBarColor(trace, 0.9),
         };
       }
     }
