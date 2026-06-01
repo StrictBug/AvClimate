@@ -160,9 +160,10 @@ function ensureChartShell(host) {
   if (!maximizeButton) {
     maximizeButton = document.createElement("button");
     maximizeButton.type = "button";
-    maximizeButton.className = "chart-maximize-btn";
+    maximizeButton.className = "chart-maximize-btn hidden";
     maximizeButton.setAttribute("aria-pressed", "false");
     maximizeButton.title = "Expand chart";
+    maximizeButton.textContent = "Maximize";
     maximizeButton.addEventListener("click", () => {
       const chartIndex = Number(maximizeButton.dataset.chartIndex);
       state.maximizedChartIndex = state.maximizedChartIndex === chartIndex ? null : chartIndex;
@@ -2572,6 +2573,11 @@ async function drawCharts(figures, section = state.displayedSection) {
   const chartHeight = applyChartShellHeights(section);
   const visibleFigures = figures.slice(0, 4);
 
+  // Keep maximize controls hidden until all chart renders complete.
+  chartUi.forEach(({ maximizeButton }) => {
+    maximizeButton.classList.add("hidden");
+  });
+
   state.latestFigures = figures;
 
   const renderPromises = visibleFigures.map((item, idx) => {
@@ -2636,9 +2642,9 @@ async function drawCharts(figures, section = state.displayedSection) {
     state.maximizedChartIndex = null;
   }
 
-  applyMaximizedChartState();
-
   await Promise.all(renderPromises);
+
+  applyMaximizedChartState();
 }
 
 let pendingFetch = null;
