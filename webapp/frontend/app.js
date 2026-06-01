@@ -686,6 +686,27 @@ function contrastAwareErrorBarColor(trace, alpha = 0.96) {
   return `rgba(17,24,39,${alpha})`;
 }
 
+function customErrorBarColor(trace, figureId = "", alpha = 0.96) {
+  const id = String(figureId || "").trim();
+  const name = String(trace?.name || "").trim().toLowerCase();
+
+  if (id === "monthly_fog" || id === "fog_share") {
+    if (name === "fog") {
+      // Keep Fog as dark blue for contrast with light series.
+      return `rgba(33,89,209,${alpha})`;
+    }
+    // Low-cloud categories are always white for these two charts.
+    return `rgba(255,255,255,${alpha})`;
+  }
+
+  if (id === "fog_cloud_joint") {
+    // Dewpoint panel: force white error bars for all categories.
+    return `rgba(255,255,255,${alpha})`;
+  }
+
+  return contrastAwareErrorBarColor(trace, alpha);
+}
+
 function isTraceVisible(trace) {
   return trace?.visible !== false && trace?.visible !== "legendonly";
 }
@@ -1373,7 +1394,7 @@ function buildStrictValueErrorOverlayTraces(host) {
           visible: true,
           thickness: 1.8,
           width: 5,
-          color: contrastAwareErrorBarColor(trace),
+          color: customErrorBarColor(trace, figureId),
         },
         meta: {
           errorBarOverlay: true,
@@ -1427,7 +1448,7 @@ function buildStrictValueErrorOverlayTraces(host) {
       visible: true,
       thickness: 1.8,
       width: 5,
-      color: contrastAwareErrorBarColor(trace),
+      color: customErrorBarColor(trace, figureId),
     };
 
     if (trace.type === "bar" && useBarOverlaysForBars) {
@@ -1556,6 +1577,7 @@ function buildStackComponentOverlayTraces(host) {
 
   const cumulativeByAxis = new Map();
   const overlays = [];
+  const figureId = host?.dataset?.figureId || "";
 
   traces.forEach((trace, traceIndex) => {
     if (!trace || trace.type !== "bar" || isErrorBarOverlayTrace(trace) || String(trace.type || "").includes("polar")) {
@@ -1616,7 +1638,7 @@ function buildStackComponentOverlayTraces(host) {
         visible: true,
         thickness: 1.8,
         width: 5,
-        color: contrastAwareErrorBarColor(trace),
+        color: customErrorBarColor(trace, figureId),
       },
       meta: {
         errorBarOverlay: true,
@@ -1633,6 +1655,7 @@ function buildStackComponentOverlayTraces(host) {
 function buildStackOverlayTraces(host) {
   const traces = host?.data || [];
   const barmode = String(host?.layout?.barmode || "").toLowerCase();
+  const figureId = host?.dataset?.figureId || "";
   if (barmode !== "stack") {
     return [];
   }
@@ -1667,6 +1690,7 @@ function buildStackOverlayTraces(host) {
 
   const overlays = [];
   grouped.forEach((axisGroup, axisKey) => {
+    const sourceTrace = traces.find((trace) => axisLayoutKeyFromTraceAxis(trace?.yaxis, "y") === axisKey && trace?.type === "bar") || null;
     const totals = axisGroup.order.map((xVal) => axisGroup.totals.get(String(xVal)) || 0);
     const pointCount = totals.length;
     if (pointCount <= 1) {
@@ -1707,7 +1731,7 @@ function buildStackOverlayTraces(host) {
         visible: true,
         thickness: 1.8,
         width: 5,
-        color: "rgba(17,24,39,0.96)",
+        color: customErrorBarColor(sourceTrace, figureId),
       },
       meta: {
         errorBarOverlay: true,
@@ -2123,7 +2147,7 @@ function applyHostErrorBars(host) {
       visible: true,
       thickness: 1.8,
       width: 5,
-      color: contrastAwareErrorBarColor(trace),
+      color: customErrorBarColor(trace, figureId),
     };
 
     const update = {
@@ -2148,7 +2172,7 @@ function applyHostErrorBars(host) {
           visible: true,
           thickness: 1.8,
           width: 5,
-          color: contrastAwareErrorBarColor(trace, 0.9),
+          color: customErrorBarColor(trace, figureId, 0.9),
         };
       }
     }
