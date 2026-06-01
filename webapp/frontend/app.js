@@ -2556,10 +2556,7 @@ function stackedUirevisionToken(figureId = "") {
 function renderExternalLegend(host, legendHost, figure, section = state.displayedSection, figureId = "") {
   const { items, groupclick } = getLegendItems(figure, section, figureId);
   legendHost.innerHTML = "";
-  legendHost.style.width = "";
   legendHost.style.minWidth = "";
-  legendHost.style.maxWidth = "";
-  legendHost.style.flexBasis = "";
   legendHost.style.marginLeft = "";
   legendHost.style.marginRight = section === "overview" && figureId === "wind_rose" ? "28px" : "";
 
@@ -2571,10 +2568,6 @@ function renderExternalLegend(host, legendHost, figure, section = state.displaye
 
   legendHost.parentElement.classList.remove("no-legend");
   legendHost.classList.remove("hidden");
-  // Keep legend width deterministic so plot width does not jump after first paint.
-  legendHost.style.width = "clamp(170px, 28%, 320px)";
-  legendHost.style.flexBasis = "clamp(170px, 28%, 320px)";
-  legendHost.style.maxWidth = "40%";
 
   items.forEach((item) => {
     const button = document.createElement("button");
