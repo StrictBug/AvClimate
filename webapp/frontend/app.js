@@ -2532,7 +2532,10 @@ function stackedUirevisionToken(figureId = "") {
 function renderExternalLegend(host, legendHost, figure, section = state.displayedSection, figureId = "") {
   const { items, groupclick } = getLegendItems(figure, section, figureId);
   legendHost.innerHTML = "";
+  legendHost.style.width = "";
   legendHost.style.minWidth = "";
+  legendHost.style.maxWidth = "";
+  legendHost.style.flexBasis = "";
   legendHost.style.marginLeft = "";
   legendHost.style.marginRight = section === "overview" && figureId === "wind_rose" ? "28px" : "";
 
@@ -2544,6 +2547,10 @@ function renderExternalLegend(host, legendHost, figure, section = state.displaye
 
   legendHost.parentElement.classList.remove("no-legend");
   legendHost.classList.remove("hidden");
+  // Keep legend width deterministic so plot width does not jump after first paint.
+  legendHost.style.width = "clamp(170px, 28%, 320px)";
+  legendHost.style.flexBasis = "clamp(170px, 28%, 320px)";
+  legendHost.style.maxWidth = "40%";
 
   items.forEach((item) => {
     const button = document.createElement("button");
@@ -2604,6 +2611,40 @@ function getChartHeight(section) {
   const perRowHeight = Math.floor((available - 8) / 2);
 
   return Math.max(220, Math.min(maxHeight, perRowHeight - 12));
+}
+
+const hostResizeFrames = new Map();
+
+function scheduleHostResize(host) {
+  if (!host) {
+    return Promise.resolve();
+  }
+
+  const existingFrame = hostResizeFrames.get(host);
+  if (existingFrame) {
+    cancelAnimationFrame(existingFrame);
+  }
+
+  return new Promise((resolve) => {
+    const frameId = requestAnimationFrame(() => {
+      hostResizeFrames.delete(host);
+      // First pass after DOM/layout updates.
+      Promise.resolve(Plotly.Plots.resize(host))
+        .then(() => new Promise((rafResolve) => requestAnimationFrame(() => {
+          // Second pass handles late legend wrapping / font metrics changes.
+          Promise.resolve(Plotly.Plots.resize(host)).finally(rafResolve);
+        })))
+        .then(() => new Promise((timeoutResolve) => {
+          // Final short delayed pass avoids intermittent clipping after section toggles.
+          setTimeout(() => {
+            Promise.resolve(Plotly.Plots.resize(host)).finally(timeoutResolve);
+          }, 60);
+        }))
+        .finally(resolve);
+    });
+
+    hostResizeFrames.set(host, frameId);
+  });
 }
 
 function applyChartShellHeights(section = state.displayedSection) {
@@ -2684,7 +2725,7 @@ async function drawCharts(figures, section = state.displayedSection) {
         .then(() => {
       renderExternalLegend(host, legend, item.figure, section, item.id);
       const maybeSync = item.id === "cloud_distribution" ? syncFogWindHoverTemplate(host) : Promise.resolve();
-      return maybeSync.then(() => Plotly.Plots.resize(host));
+      return maybeSync.then(() => scheduleHostResize(host));
       });
     });
   });
@@ -2705,7 +2746,45 @@ async function drawCharts(figures, section = state.displayedSection) {
 let pendingFetch = null;
 let hasShownInitialLoading = false;
 let fetchDebounceTimer = null;
+let chartContainerResizeObserversInitialized = false;
 const DRIVER_FETCH_DEBOUNCE_MS = 320;
+
+function initializeChartContainerResizeObservers() {
+  if (chartContainerResizeObserversInitialized || typeof ResizeObserver === "undefined") {
+    return;
+  }
+
+  const lastSizes = new WeakMap();
+  const observer = new ResizeObserver((entries) => {
+    if (!state.latestFigures.length) {
+      return;
+    }
+
+    entries.forEach((entry) => {
+      const card = entry.target;
+      const host = card.querySelector(".chart");
+      if (!host || card.classList.contains("hidden")) {
+        return;
+      }
+
+      const width = Math.round(entry.contentRect.width);
+      const height = Math.round(entry.contentRect.height);
+      const prev = lastSizes.get(card);
+      if (prev && prev.width === width && prev.height === height) {
+        return;
+      }
+
+      lastSizes.set(card, { width, height });
+      scheduleHostResize(host);
+    });
+  });
+
+  chartUi.forEach(({ card }) => {
+    observer.observe(card);
+  });
+
+  chartContainerResizeObserversInitialized = true;
+}
 
 function scheduleFetchCharts(delayMs = 0) {
   if (fetchDebounceTimer) {
@@ -2814,14 +2893,16 @@ async function fetchCharts() {
       setStatus("");
     }
 
+    // Ensure section-specific layout/toolbars are applied before Plotly sizing.
+    state.displayedSection = requestedSection;
+    applySectionLayout(requestedSection);
+
     await drawCharts(data.figures || [], requestedSection);
 
     if (controller.signal.aborted) {
       return;
     }
 
-    state.displayedSection = requestedSection;
-    applySectionLayout(requestedSection);
     renderMetrics(data.metrics, requestedSection);
   } catch (err) {
     if (err.name !== "AbortError") {
@@ -2897,10 +2978,13 @@ function wireControls() {
       cancelAnimationFrame(resizeFrame);
     }
     resizeFrame = requestAnimationFrame(() => {
-      if (!state.latestFigures.length) {
-        applyChartShellHeights(state.displayedSection);
-      } else {
-        drawCharts(state.latestFigures, state.displayedSection);
+      applyChartShellHeights(state.displayedSection);
+      if (state.latestFigures.length) {
+        els.charts.forEach((host, index) => {
+          if (index < state.latestFigures.length && !chartUi[index].card.classList.contains("hidden")) {
+            scheduleHostResize(host);
+          }
+        });
       }
       resizeFrame = null;
     });
@@ -2915,6 +2999,7 @@ async function init() {
     renderCategories();
     applySectionLayout();
     applyChartShellHeights();
+    initializeChartContainerResizeObservers();
     wireControls();
     fetchCharts();
   } catch (error) {

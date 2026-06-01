@@ -368,8 +368,9 @@ body {
 
 .chart-legend {
   flex: 0 0 auto;
-  width: max-content;
-  max-width: min(350px, 50%);
+  width: clamp(170px, 28%, 320px);
+  flex-basis: clamp(170px, 28%, 320px);
+  max-width: 40%;
   min-width: 0;
   align-self: center;
   background: rgba(255, 255, 255, 0.92);
