@@ -1538,7 +1538,7 @@ def build_fog_low_cloud_frequency_from_combined(
             width=bar_width,
             hovertemplate=(
                 "Month: %{customdata}<br>"
-                f"{display_label}: %{{y:.2f}}<extra></extra>"
+                f"{display_label}: %{{y:.2f}}%<extra></extra>"
             ),
         )
 
@@ -1549,7 +1549,7 @@ def build_fog_low_cloud_frequency_from_combined(
         marker_color="#d4af37",
         customdata=month_labels,
         width=bar_width,
-        hovertemplate="Month: %{customdata}<br>Fog: %{y:.2f}<extra></extra>",
+        hovertemplate="Month: %{customdata}<br>Fog: %{y:.2f}%<extra></extra>",
     )
 
     fig.update_layout(
@@ -1565,7 +1565,7 @@ def build_fog_low_cloud_frequency_from_combined(
         showgrid=False,
         range=[0.2, len(month_positions) + 0.8],
     )
-    fig.update_yaxes(title_text="Avg Days/Month")
+    fig.update_yaxes(title_text="Share of Days (%)")
     apply_side_legend(
         fig,
         width_px=WIDE_LEGEND_ENTRY_WIDTH,
@@ -2639,7 +2639,7 @@ def build_fog_low_cloud_figures_from_precomputed(
                     width=bar_width,
                     hovertemplate=(
                         "Hour: %{customdata}<br>"
-                        f"{display_label}: %{{y:.2f}}<extra></extra>"
+                        f"{display_label}: %{{y:.2f}}%<extra></extra>"
                     ),
                 )
 
@@ -2650,11 +2650,11 @@ def build_fog_low_cloud_figures_from_precomputed(
                 marker_color="#d4af37",
                 customdata=hour_hover_labels,
                 width=bar_width,
-                hovertemplate="Hour: %{customdata}<br>Fog: %{y:.2f}<extra></extra>",
+                hovertemplate="Hour: %{customdata}<br>Fog: %{y:.2f}%<extra></extra>",
             )
             fig.update_layout(title="Fog/Low Cloud Frequency by Hour", barmode="stack", legend_title_text="Category")
             fig.update_xaxes(title_text="", tickmode="array", tickvals=[0, 5, 10, 15, 20], ticktext=["00Z", "05Z", "10Z", "15Z", "20Z"], showgrid=False, range=[-0.8, 23.8])
-            fig.update_yaxes(title_text="Avg Days/Hour")
+            fig.update_yaxes(title_text="Share of Days (%)")
             figures["fog_share"] = fig
 
     # dewpoint lines
@@ -3062,14 +3062,19 @@ def build_smoke_dust_figures_from_precomputed(
         )
         hourly_df = filter_precomputed_rows_by_state(hourly_df, enso=enso, iod=iod, sam=sam, mjo=mjo)
         if not hourly_df.empty:
-            hourly = hourly_df.groupby(["hour", "Phenomenon"], as_index=False)["Count"].sum()
+            hourly = (
+                hourly_df.groupby(["year", "hour", "Phenomenon"], as_index=False)["Count"]
+                .sum()
+                .groupby(["hour", "Phenomenon"], as_index=False)["Count"]
+                .mean()
+            )
             fig = px.bar(
                 hourly,
                 x="hour",
                 y="Count",
                 color="Phenomenon",
                 barmode="group",
-                labels={"Count": "Observations", "Phenomenon": "Type"},
+                labels={"Count": "Avg Obs/Hour (per year)", "Phenomenon": "Type"},
                 title="Hourly Smoke/Dust Frequency by Phenomenon",
                 color_discrete_map=phenom_colors,
                 category_orders={"Phenomenon": smoke_tokens},
@@ -3435,6 +3440,7 @@ def average_monthly_fog_low_cloud_days(fog_df: pd.DataFrame, icao: str) -> pd.Da
         daily_flags.groupby(["bom_year", "bom_month"], as_index=False)
         .agg(
             Fog=("Fog", "sum"),
+            total_days=("bom_day", "nunique"),
             **{
                 "below 2000ft": ("below 2000ft", "sum"),
                 "below 1500ft": ("below 1500ft", "sum"),
@@ -3443,6 +3449,16 @@ def average_monthly_fog_low_cloud_days(fog_df: pd.DataFrame, icao: str) -> pd.Da
             },
         )
     )
+
+    # Convert day counts into rates so rain/non-rain/all are comparable.
+    monthly_counts["total_days"] = pd.to_numeric(monthly_counts["total_days"], errors="coerce").fillna(0.0)
+    for col in ["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]:
+        monthly_counts[col] = np.where(
+            monthly_counts["total_days"] > 0,
+            (pd.to_numeric(monthly_counts[col], errors="coerce").fillna(0.0) / monthly_counts["total_days"]) * 100.0,
+            0.0,
+        )
+
     monthly_avg = (
         monthly_counts.groupby("bom_month", as_index=False)[["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]]
         .mean()
@@ -3480,6 +3496,7 @@ def average_hourly_fog_low_cloud_days(fog_df: pd.DataFrame, icao: str) -> pd.Dat
         hourly_flags.groupby(["bom_year", "hour"], as_index=False)
         .agg(
             Fog=("Fog", "sum"),
+            total_day_hours=("bom_day", "nunique"),
             **{
                 "below 2000ft": ("below 2000ft", "sum"),
                 "below 1500ft": ("below 1500ft", "sum"),
@@ -3488,6 +3505,16 @@ def average_hourly_fog_low_cloud_days(fog_df: pd.DataFrame, icao: str) -> pd.Dat
             },
         )
     )
+
+    # Convert per-hour day counts into rates so selections are duration-normalized.
+    hourly_counts["total_day_hours"] = pd.to_numeric(hourly_counts["total_day_hours"], errors="coerce").fillna(0.0)
+    for col in ["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]:
+        hourly_counts[col] = np.where(
+            hourly_counts["total_day_hours"] > 0,
+            (pd.to_numeric(hourly_counts[col], errors="coerce").fillna(0.0) / hourly_counts["total_day_hours"]) * 100.0,
+            0.0,
+        )
+
     hourly_avg = hourly_counts.groupby("hour", as_index=False)[["Fog", "below 2000ft", "below 1500ft", "below 1000ft", "below 500ft"]].mean()
     hourly_avg["Hour"] = hourly_avg["hour"].astype(int).astype(str)
 
@@ -4647,7 +4674,12 @@ def charts(
         if not requested_figure_ids:
             requested_fog_ids = {"monthly_fog", "fog_share", "cloud_distribution", "fog_cloud_joint"}
 
-        if requested_fog_ids:
+        # monthly_fog and fog_share are now rate-based and require live mode-day denominators.
+        requested_fog_precomputed_ids = {
+            fid for fid in requested_fog_ids if fid in {"cloud_distribution", "fog_cloud_joint"}
+        }
+
+        if requested_fog_precomputed_ids:
             mode_label_map = {
                 "all": "All Days",
                 "rain": "Rain Days",
@@ -4660,7 +4692,7 @@ def charts(
 
             built = build_fog_low_cloud_figures_from_precomputed(
                 icao,
-                requested_figure_ids=requested_fog_ids,
+                requested_figure_ids=requested_fog_precomputed_ids,
                 month_numbers=month_number_order,
                 season=season,
                 year_start=yearStart,
@@ -4677,36 +4709,32 @@ def charts(
 
             # If any requested fog figure is missing from precomputed shards,
             # fall through to the live compute path instead of returning placeholders.
-            if not all(fid in built for fid in requested_fog_ids):
+            if not all(fid in built for fid in requested_fog_precomputed_ids):
                 built = {}
 
             if built:
                 y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
                 figures: list[dict[str, Any]] = []
 
-                if "monthly_fog" in requested_fog_ids:
+                if "monthly_fog" in requested_fog_precomputed_ids:
                     fig = built.get("monthly_fog")
                     if fig is None:
                         fig = build_placeholder_figure(f"Fog/Low Cloud Frequency ({selected_monthly_label})")
                     apply_common_layout(fig)
                     apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
                     apply_frequency_panel_layout(fig)
-                    if "monthly_fog" in y_ceilings:
-                        fig.update_yaxes(range=[0, float(y_ceilings["monthly_fog"])], autorange=False)
                     figures.append(fig_payload("monthly_fog", fig))
 
-                if "fog_share" in requested_fog_ids:
+                if "fog_share" in requested_fog_precomputed_ids:
                     fig = built.get("fog_share")
                     if fig is None:
                         fig = build_placeholder_figure(f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})")
                     apply_common_layout(fig)
                     apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
                     apply_frequency_panel_layout(fig)
-                    if "fog_share" in y_ceilings:
-                        fig.update_yaxes(range=[0, float(y_ceilings["fog_share"])], autorange=False)
                     figures.append(fig_payload("fog_share", fig))
 
-                if "cloud_distribution" in requested_fog_ids:
+                if "cloud_distribution" in requested_fog_precomputed_ids:
                     fig = built.get("cloud_distribution")
                     if fig is None:
                         fig = build_placeholder_figure(f"Wind Direction/Strength ({selected_wind_label})")
@@ -4714,7 +4742,7 @@ def charts(
                     apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=52, title_text="Category", groupclick="togglegroup", bgcolor="rgba(255,255,255,0.92)")
                     figures.append(fig_payload("cloud_distribution", fig))
 
-                if "fog_cloud_joint" in requested_fog_ids:
+                if "fog_cloud_joint" in requested_fog_precomputed_ids:
                     fig = built.get("fog_cloud_joint")
                     if fig is None:
                         fig = build_placeholder_figure(f"Avg Dewpoint by Month ({selected_dewpoint_label})")
@@ -4787,8 +4815,6 @@ def charts(
                         fig = build_placeholder_figure("Hourly Smoke/Dust Frequency by Phenomenon")
                     apply_common_layout(fig)
                     apply_frequency_panel_layout(fig)
-                    if "hourly_smoke" in y_ceilings:
-                        fig.update_yaxes(range=[0, float(y_ceilings["hourly_smoke"])], autorange=False)
                     figures.append(fig_payload("hourly_smoke", fig))
 
                 if "radial_scatter_dust" in requested_smoke_ids:
@@ -5606,7 +5632,7 @@ def charts(
                     width=bar_width,
                     hovertemplate=(
                         "Hour: %{customdata}<br>"
-                        f"{display_label}: %{{y:.2f}}<extra></extra>"
+                        f"{display_label}: %{{y:.2f}}%<extra></extra>"
                     ),
                 )
 
@@ -5617,7 +5643,7 @@ def charts(
                 marker_color="#d4af37",
                 customdata=hour_hover_labels,
                 width=bar_width,
-                hovertemplate="Hour: %{customdata}<br>Fog: %{y:.2f}<extra></extra>",
+                hovertemplate="Hour: %{customdata}<br>Fog: %{y:.2f}%<extra></extra>",
             )
 
             fig.update_layout(
@@ -5633,7 +5659,7 @@ def charts(
                 showgrid=False,
                 range=[-0.8, 23.8],
             )
-            fig.update_yaxes(title_text="Avg Days/Hour")
+            fig.update_yaxes(title_text="Share of Days (%)")
             apply_side_legend(
                 fig,
                 width_px=WIDE_LEGEND_ENTRY_WIDTH,
@@ -5901,8 +5927,6 @@ def charts(
                     apply_common_layout(fig_selected_frequency)
                     apply_fog_side_legend(fig_selected_frequency)
                     apply_frequency_panel_layout(fig_selected_frequency)
-                    if "monthly_fog" in y_ceilings:
-                        fig_selected_frequency.update_yaxes(range=[0, y_ceilings["monthly_fog"]], autorange=False)
                     fog_figures.append(fig_payload("monthly_fog", fig_selected_frequency))
                 elif wants_figure("monthly_fog"):
                     add_placeholder("monthly_fog", f"Fog/Low Cloud Frequency ({selected_monthly_label})", "No records for selected day filter")
@@ -5915,8 +5939,6 @@ def charts(
                     apply_common_layout(fig_selected_hourly)
                     apply_fog_side_legend(fig_selected_hourly)
                     apply_frequency_panel_layout(fig_selected_hourly)
-                    if "fog_share" in y_ceilings:
-                        fig_selected_hourly.update_yaxes(range=[0, y_ceilings["fog_share"]], autorange=False)
                     fog_figures.append(fig_payload("fog_share", fig_selected_hourly))
                 elif wants_figure("fog_share"):
                     add_placeholder("fog_share", f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})", "No hourly fog/low cloud data available for selected day filter")
@@ -6036,9 +6058,11 @@ def charts(
         # Top right: Hourly paired frequency by phenomenon
         if not dust_df.empty and "hour" in dust_df.columns:
             hourly = (
-                dust_df.groupby(["hour", "Phenomenon"], as_index=False)
+                dust_df.groupby(["year", "hour", "Phenomenon"], as_index=False)
                 .size()
                 .rename(columns={"size": "Count"})
+                .groupby(["hour", "Phenomenon"], as_index=False)["Count"]
+                .mean()
             )
             fig_hour = px.bar(
                 hourly,
@@ -6046,7 +6070,7 @@ def charts(
                 y="Count",
                 color="Phenomenon",
                 barmode="group",
-                labels={"Count": "Observations", "Phenomenon": "Type"},
+                labels={"Count": "Avg Obs/Hour (per year)", "Phenomenon": "Type"},
                 title="Hourly Smoke/Dust Frequency by Phenomenon",
                 color_discrete_map=phenom_colors,
                 category_orders={"Phenomenon": smoke_tokens},
@@ -6059,8 +6083,6 @@ def charts(
             )
             apply_common_layout(fig_hour)
             apply_frequency_panel_layout(fig_hour)
-            if "hourly_smoke" in y_ceilings:
-                fig_hour.update_yaxes(range=[0, y_ceilings["hourly_smoke"]], autorange=False)
             figures.append(fig_payload("hourly_smoke", fig_hour))
         else:
             fig = build_placeholder_figure("Hourly Smoke/Dust Frequency by Phenomenon")
