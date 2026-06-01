@@ -1,22 +1,28 @@
 FROM python:3.10-slim
 
-# 1. Create a non-root user (Hugging Face security requirement)
-RUN useradd -m -u 1000 user
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash \
+    curl \
+    ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -m -u 1000 user
+
 USER user
 ENV HOME=/home/user \
-    PATH=/home/user/.local/bin:$PATH
+    PATH=/home/user/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PORT=7860
 
 WORKDIR $HOME/app
 
-# 2. Copy dependencies and install them
-COPY --chown=user requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+COPY --chown=user:user webapp/requirements.txt ./webapp/requirements.txt
+RUN pip install --no-cache-dir --user -r webapp/requirements.txt
 
-# 3. Copy the rest of your application code
-COPY --chown=user . .
+COPY --chown=user:user . .
 
-# 4. Hugging Face strictly routes incoming traffic to port 7860
+RUN bash scripts/helpers/bootstrap_data_from_release.sh \
+ && python scripts/helpers/split_fog_wind_by_mode.py
+
 EXPOSE 7860
 
-# 5. Launch your app (Adjust 'main:app' if your entrypoint file is named differently)
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["bash", "scripts/helpers/start_render.sh"]
