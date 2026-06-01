@@ -3,6 +3,26 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PORT_VALUE="${PORT:-10000}"
+
+# Bootstrap parquet data (downloads from GitHub Releases using env vars)
+echo "[start] running data bootstrap..."
+bash "$ROOT_DIR/scripts/helpers/bootstrap_data_from_release.sh"
+
+# Run all precompute scripts to generate chart data
+echo "[start] running precompute pipeline..."
+python "$ROOT_DIR/scripts/helpers/split_fog_wind_by_mode.py"
+python "$ROOT_DIR/scripts/helpers/precompute_overview_fog_monthly.py"
+python "$ROOT_DIR/scripts/helpers/precompute_overview_rain_thunder_monthly.py"
+python "$ROOT_DIR/scripts/helpers/precompute_overview_temp_dewpoint_monthly.py"
+python "$ROOT_DIR/scripts/helpers/precompute_overview_wind_rose.py"
+python "$ROOT_DIR/scripts/helpers/precompute_y_ceilings.py"
+python "$ROOT_DIR/scripts/helpers/precompute_fog_low_cloud.py"
+python "$ROOT_DIR/scripts/helpers/split_fog_low_cloud_precomputed.py"
+python "$ROOT_DIR/scripts/helpers/precompute_wind_gale_monthly.py"
+python "$ROOT_DIR/scripts/helpers/precompute_precipitation.py"
+python "$ROOT_DIR/scripts/helpers/precompute_smoke_dust.py"
+echo "[start] precompute complete"
+
 export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
 WEB_CONCURRENCY="${WEB_CONCURRENCY:-1}"
 GUNICORN_MAX_REQUESTS="${GUNICORN_MAX_REQUESTS:-40}"
