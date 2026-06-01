@@ -138,3 +138,57 @@ Deliverable:
 Paste this into a new Copilot chat:
 
 We are planning a static-only AvClimate architecture where all charts are rendered from precomputed artifacts and no live backend compute is required. Use HANDOVER_STATIC_PRECOMPUTE_TODO.md as the source plan. First, produce a chart coverage and parity matrix from current code, then identify and implement missing precompute paths without changing functionality or data meaning. Keep artifacts compressed and shard by airport and chart family. Add manifest-based frontend loading and validate parity plus browser memory performance before proposing cutover.
+
+## 10. Runtime Memory Incident Playbook (Render Free Tier)
+
+Use this section when memory regressions return before full static-only cutover.
+
+### Current known-good baseline (as of 2026-05-31)
+- Fog/Low Cloud tab no longer crashes the worker under typical YMML/YMMB tests.
+- Chart 3 (cloud distribution) may skip under pressure by design, but requests return 200 and app remains stable.
+- Skip buffer currently tuned to 50 MB below guard (`CHARTS_MEMORY_GUARD_MB=430` => skip threshold ~380 MB).
+
+### Key shipped mitigations (chronological)
+- `a7e3d0238`: initial near-guard skip for fog cloud distribution.
+- `094a9427b`: guard moved before shard load (prevent OOM during load).
+- `ff763c39a`: lower cloud_distribution memory while preserving filters.
+- `541d043b2`: build-time mode-split wind shards + mode-aware loading.
+- `2a7fd0bb0`: prevent fallback to raw airport load after precomputed skip.
+- `b19801283`: reduce precomputed memory retention and lower fog_share allocations.
+- `728513fe8`: mode/state fast-path shards for hourly/dewpoint/wind.
+- `afaf53865`: relax skip buffer from 180 MB to 50 MB.
+
+### Fast diagnostic checklist
+1. Confirm active deploy commit matches latest memory fix commit.
+2. Reproduce with one airport and one fresh browser session.
+3. Inspect logs for this order:
+   - `charts.start` for fog request.
+   - `charts.fog_cloud_distribution_skipped` (optional if rendering succeeds).
+   - `charts.fog_low_cloud_precomputed` with `figures=1`.
+4. Red flag indicators:
+   - `charts.airport_loaded` during fog precomputed request path.
+   - process restart immediately after chart request.
+
+### Escalation order (least risky to most invasive)
+1. Tune skip buffer conservatively in steps (example: 50 -> 35 -> 20).
+2. Ensure build-time shard splitter ran successfully on Render deploy.
+3. Expand shard specialization for heavy families (mode + all-state first).
+4. Add more granular state shards if all-state fast path is insufficient.
+5. Only then consider near-guard reduced-resolution rendering fallback.
+
+### What to avoid
+- Avoid setting skip buffer to 0 immediately; transient allocation spikes can reintroduce worker restarts.
+- Avoid reverting to raw fallback path for fog precomputed requests.
+
+### Recommended test matrix after each memory change
+1. Airports: YMML, YMMB, one high-volume tropical site.
+2. Modes: all, rain, non_rain.
+3. Steps: overview load -> fog chart 1 -> fog chart 2 -> fog chart 3 -> fog chart 4.
+4. Collect:
+   - rss at each `charts.start`
+   - whether chart 3 rendered or skipped
+   - restart/no-restart outcome
+
+### Operational rollback guidance
+- If restarts return after threshold tuning, revert to prior known stable commit and reapply only shard optimizations.
+- Keep commit references above as rollback anchors.

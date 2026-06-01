@@ -9,6 +9,7 @@ import math
 import os
 import re
 import time
+import hashlib
 from functools import lru_cache
 from io import BytesIO
 from typing import Any
@@ -20,9 +21,9 @@ import plotly.express as px
 import plotly.graph_objects as go
 from timezonefinder import TimezoneFinder
 from plotly.utils import PlotlyJSONEncoder
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
@@ -4165,8 +4166,8 @@ def favicon() -> FileResponse:
     return FileResponse(os.path.join(ROOT_DIR, "favicon.svg"))
 
 
-@app.get("/api/options")
-def options() -> dict[str, Any]:
+@lru_cache(maxsize=1)
+def options_payload_cached() -> dict[str, Any]:
     airports = list(available_airports())
     return {
         "airports": airports,
@@ -4184,6 +4185,27 @@ def options() -> dict[str, Any]:
             "section": "overview",
         },
     }
+
+
+@lru_cache(maxsize=1)
+def options_payload_etag() -> str:
+    payload_bytes = json.dumps(options_payload_cached(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f'"{hashlib.sha256(payload_bytes).hexdigest()}"'
+
+
+@app.get("/api/options")
+def options(request: Request):
+    etag = options_payload_etag()
+    headers = {
+        "Cache-Control": "public, max-age=300, stale-while-revalidate=300",
+        "ETag": etag,
+    }
+
+    if_none_match = request.headers.get("if-none-match", "")
+    if etag in if_none_match:
+        return Response(status_code=304, headers=headers)
+
+    return JSONResponse(content=options_payload_cached(), headers=headers)
 
 
 @app.get("/api/charts")

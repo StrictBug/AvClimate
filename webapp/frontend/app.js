@@ -469,6 +469,16 @@ function normalizeRanges(changedField) {
 }
 
 async function fetchOptions() {
+  if (state.options) {
+    return state.options;
+  }
+
+  if (fetchOptions.inFlightPromise) {
+    await fetchOptions.inFlightPromise;
+    return state.options;
+  }
+
+  fetchOptions.inFlightPromise = (async () => {
   const res = await fetch(apiUrl("/api/options"));
   const data = await res.json();
   state.options = data;
@@ -486,6 +496,15 @@ async function fetchOptions() {
   state.requestedSection = data.default.section;
   state.displayedSection = data.default.section;
   updateSliderLabels();
+  })();
+
+  try {
+    await fetchOptions.inFlightPromise;
+  } finally {
+    fetchOptions.inFlightPromise = null;
+  }
+
+  return state.options;
 }
 
 function getParams() {
@@ -516,6 +535,9 @@ function getParams() {
 function getSectionFigureBatches(section) {
   if (section === "overview") {
     return [["wind_rose"], ["rain_thunder"], ["temp_dewpoint"], ["fog_low_cloud"]];
+  }
+  if (section === "wind") {
+    return [["wind_rose"], ["gale_weather_split"]];
   }
   if (section === "fog_low_cloud") {
     return [["monthly_fog"], ["fog_share"], ["cloud_distribution"], ["fog_cloud_joint"]];
