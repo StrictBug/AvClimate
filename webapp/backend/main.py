@@ -4675,64 +4675,70 @@ def charts(
                 fog_dewpoint_mode=fogDewpointMode,
             )
 
-            y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
-            figures: list[dict[str, Any]] = []
+            # If any requested fog figure is missing from precomputed shards,
+            # fall through to the live compute path instead of returning placeholders.
+            if not all(fid in built for fid in requested_fog_ids):
+                built = {}
 
-            if "monthly_fog" in requested_fog_ids:
-                fig = built.get("monthly_fog")
-                if fig is None:
-                    fig = build_placeholder_figure(f"Fog/Low Cloud Frequency ({selected_monthly_label})")
-                apply_common_layout(fig)
-                apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
-                apply_frequency_panel_layout(fig)
-                if "monthly_fog" in y_ceilings:
-                    fig.update_yaxes(range=[0, float(y_ceilings["monthly_fog"])], autorange=False)
-                figures.append(fig_payload("monthly_fog", fig))
+            if built:
+                y_ceilings = load_precomputed_y_ceilings_for_airport(icao)
+                figures: list[dict[str, Any]] = []
 
-            if "fog_share" in requested_fog_ids:
-                fig = built.get("fog_share")
-                if fig is None:
-                    fig = build_placeholder_figure(f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})")
-                apply_common_layout(fig)
-                apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
-                apply_frequency_panel_layout(fig)
-                if "fog_share" in y_ceilings:
-                    fig.update_yaxes(range=[0, float(y_ceilings["fog_share"])], autorange=False)
-                figures.append(fig_payload("fog_share", fig))
+                if "monthly_fog" in requested_fog_ids:
+                    fig = built.get("monthly_fog")
+                    if fig is None:
+                        fig = build_placeholder_figure(f"Fog/Low Cloud Frequency ({selected_monthly_label})")
+                    apply_common_layout(fig)
+                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                    apply_frequency_panel_layout(fig)
+                    if "monthly_fog" in y_ceilings:
+                        fig.update_yaxes(range=[0, float(y_ceilings["monthly_fog"])], autorange=False)
+                    figures.append(fig_payload("monthly_fog", fig))
 
-            if "cloud_distribution" in requested_fog_ids:
-                fig = built.get("cloud_distribution")
-                if fig is None:
-                    fig = build_placeholder_figure(f"Wind Direction/Strength ({selected_wind_label})")
-                apply_common_layout(fig)
-                apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=52, title_text="Category", groupclick="togglegroup", bgcolor="rgba(255,255,255,0.92)")
-                figures.append(fig_payload("cloud_distribution", fig))
+                if "fog_share" in requested_fog_ids:
+                    fig = built.get("fog_share")
+                    if fig is None:
+                        fig = build_placeholder_figure(f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})")
+                    apply_common_layout(fig)
+                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                    apply_frequency_panel_layout(fig)
+                    if "fog_share" in y_ceilings:
+                        fig.update_yaxes(range=[0, float(y_ceilings["fog_share"])], autorange=False)
+                    figures.append(fig_payload("fog_share", fig))
 
-            if "fog_cloud_joint" in requested_fog_ids:
-                fig = built.get("fog_cloud_joint")
-                if fig is None:
-                    fig = build_placeholder_figure(f"Avg Dewpoint by Month ({selected_dewpoint_label})")
-                apply_common_layout(fig)
-                apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
-                apply_frequency_panel_layout(fig)
-                if "fog_cloud_joint_min" in y_ceilings and "fog_cloud_joint_max" in y_ceilings:
-                    fig.update_yaxes(range=[float(y_ceilings["fog_cloud_joint_min"]), float(y_ceilings["fog_cloud_joint_max"])], autorange=False)
-                figures.append(fig_payload("fog_cloud_joint", fig))
+                if "cloud_distribution" in requested_fog_ids:
+                    fig = built.get("cloud_distribution")
+                    if fig is None:
+                        fig = build_placeholder_figure(f"Wind Direction/Strength ({selected_wind_label})")
+                    apply_common_layout(fig)
+                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=52, title_text="Category", groupclick="togglegroup", bgcolor="rgba(255,255,255,0.92)")
+                    figures.append(fig_payload("cloud_distribution", fig))
 
-            if figures:
-                elapsed_ms = int((time.perf_counter() - started) * 1000)
-                log_memory_phase(
-                    "charts.fog_low_cloud_precomputed",
-                    section=section,
-                    icao=icao,
-                    figures=len(figures),
-                    elapsed_ms=elapsed_ms,
-                )
-                trim_process_memory()
-                return {
-                    "section": section,
-                    "figures": figures,
-                }
+                if "fog_cloud_joint" in requested_fog_ids:
+                    fig = built.get("fog_cloud_joint")
+                    if fig is None:
+                        fig = build_placeholder_figure(f"Avg Dewpoint by Month ({selected_dewpoint_label})")
+                    apply_common_layout(fig)
+                    apply_side_legend(fig, width_px=WIDE_LEGEND_ENTRY_WIDTH, font_size=10, top_margin=36, title_text="Category", bgcolor="rgba(255,255,255,0.92)")
+                    apply_frequency_panel_layout(fig)
+                    if "fog_cloud_joint_min" in y_ceilings and "fog_cloud_joint_max" in y_ceilings:
+                        fig.update_yaxes(range=[float(y_ceilings["fog_cloud_joint_min"]), float(y_ceilings["fog_cloud_joint_max"])], autorange=False)
+                    figures.append(fig_payload("fog_cloud_joint", fig))
+
+                if figures:
+                    elapsed_ms = int((time.perf_counter() - started) * 1000)
+                    log_memory_phase(
+                        "charts.fog_low_cloud_precomputed",
+                        section=section,
+                        icao=icao,
+                        figures=len(figures),
+                        elapsed_ms=elapsed_ms,
+                    )
+                    trim_process_memory()
+                    return {
+                        "section": section,
+                        "figures": figures,
+                    }
 
     can_use_precomputed_smoke_dust = (
         section == "smoke_dust"
@@ -5144,93 +5150,95 @@ def charts(
                 figures.append(fig_payload("fog_low_cloud", fig_fog))
 
     elif section == "wind":
-        bg_img_base64 = None
-        wr_df = filtered_df.select(["WND_DIR", "WND_SPD"]).drop_nulls()
-        wr_df = wr_df.with_columns(((pl.col("WND_DIR") + 11.25) % 360 // 22.5 * 22.5).alias("dir_bin"))
-        rose_data = (
-            wr_df.with_columns(pl.col("WND_SPD").map_elements(categorize_speed, return_dtype=pl.Utf8).alias("Speed Range"))
-            .group_by(["dir_bin", "Speed Range"])
-            .agg(pl.len().alias("Frequency"))
-            .to_pandas()
-        )
-        total_obs = float(rose_data["Frequency"].sum()) if not rose_data.empty else 0.0
-        rose_data["Frequency"] = (rose_data["Frequency"] / total_obs * 100.0) if total_obs > 0 else 0.0
-        fig_rose = px.bar_polar(
-            rose_data,
-            r="Frequency",
-            theta="dir_bin",
-            color="Speed Range",
-            color_discrete_sequence=px.colors.sequential.Turbo,
-            title="Wind Rose",
-            category_orders={"Speed Range": ["0-1 kt", "1-5 kt", "5-10 kt", "10-15 kt", "15-22 kt", "22+ kt"]},
-        )
-        fig_rose.update_traces(hovertemplate="Direction: %{theta}<br>Speed: %{fullData.name}<br>Frequency: %{r:.2f}%<extra></extra>")
-        try:
-            airport_lat = COORDS_DF.loc[icao, "LAT"]
-            airport_lon = COORDS_DF.loc[icao, "LONG"]
-            bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
-        except Exception:
-            pass
-        fig_rose.update_layout(
-            legend=dict(bgcolor="rgba(255,255,255,0.88)", bordercolor="#c7d4ef", borderwidth=1),
-            polar=dict(bgcolor="rgba(0,0,0,0)", angularaxis=dict(direction="clockwise", period=360)),
-        )
-        apply_wind_rose_style(fig_rose)
-        apply_common_layout(fig_rose)
-        # Wind-tab specific spacing: shift plot right and reserve more title clearance.
-        fig_rose.update_layout(
-            margin=dict(l=62, r=DEFAULT_LEGEND_ENTRY_WIDTH + LEGEND_MARGIN_PADDING, t=48, b=22),
-            polar=dict(
-                domain=dict(x=[0.14, 0.92], y=[0.0, 0.93]),
-                bgcolor="rgba(0,0,0,0)",
-                angularaxis=dict(direction="clockwise", period=360),
-            ),
-        )
-        if bg_img_base64:
-            apply_polar_background(fig_rose, bg_img_base64)
-        figures.append(fig_payload("wind_rose", fig_rose))
+        if wants_figure("wind_rose"):
+            bg_img_base64 = None
+            wr_df = filtered_df.select(["WND_DIR", "WND_SPD"]).drop_nulls()
+            wr_df = wr_df.with_columns(((pl.col("WND_DIR") + 11.25) % 360 // 22.5 * 22.5).alias("dir_bin"))
+            rose_data = (
+                wr_df.with_columns(pl.col("WND_SPD").map_elements(categorize_speed, return_dtype=pl.Utf8).alias("Speed Range"))
+                .group_by(["dir_bin", "Speed Range"])
+                .agg(pl.len().alias("Frequency"))
+                .to_pandas()
+            )
+            total_obs = float(rose_data["Frequency"].sum()) if not rose_data.empty else 0.0
+            rose_data["Frequency"] = (rose_data["Frequency"] / total_obs * 100.0) if total_obs > 0 else 0.0
+            fig_rose = px.bar_polar(
+                rose_data,
+                r="Frequency",
+                theta="dir_bin",
+                color="Speed Range",
+                color_discrete_sequence=px.colors.sequential.Turbo,
+                title="Wind Rose",
+                category_orders={"Speed Range": ["0-1 kt", "1-5 kt", "5-10 kt", "10-15 kt", "15-22 kt", "22+ kt"]},
+            )
+            fig_rose.update_traces(hovertemplate="Direction: %{theta}<br>Speed: %{fullData.name}<br>Frequency: %{r:.2f}%<extra></extra>")
+            try:
+                airport_lat = COORDS_DF.loc[icao, "LAT"]
+                airport_lon = COORDS_DF.loc[icao, "LONG"]
+                bg_img_base64 = get_centered_background(float(airport_lat), float(airport_lon), zoom=ZOOM_LEVEL)
+            except Exception:
+                pass
+            fig_rose.update_layout(
+                legend=dict(bgcolor="rgba(255,255,255,0.88)", bordercolor="#c7d4ef", borderwidth=1),
+                polar=dict(bgcolor="rgba(0,0,0,0)", angularaxis=dict(direction="clockwise", period=360)),
+            )
+            apply_wind_rose_style(fig_rose)
+            apply_common_layout(fig_rose)
+            # Wind-tab specific spacing: shift plot right and reserve more title clearance.
+            fig_rose.update_layout(
+                margin=dict(l=62, r=DEFAULT_LEGEND_ENTRY_WIDTH + LEGEND_MARGIN_PADDING, t=48, b=22),
+                polar=dict(
+                    domain=dict(x=[0.14, 0.92], y=[0.0, 0.93]),
+                    bgcolor="rgba(0,0,0,0)",
+                    angularaxis=dict(direction="clockwise", period=360),
+                ),
+            )
+            if bg_img_base64:
+                apply_polar_background(fig_rose, bg_img_base64)
+            figures.append(fig_payload("wind_rose", fig_rose))
 
-        gale_df = filtered_df.select([
-            "year",
-            "month",
-            "TM_FULL",
-            "WND_SPD",
-            "MAX_WND_GUST_10",
-            "PRCP_10",
-            "PRST_WX_DSC_1",
-            "PRST_WX_PHENOM_1",
-            "PRST_WX_DSC_2",
-            "PRST_WX_PHENOM_2",
-        ]).to_pandas()
+        if wants_figure("gale_weather_split"):
+            gale_df = filtered_df.select([
+                "year",
+                "month",
+                "TM_FULL",
+                "WND_SPD",
+                "MAX_WND_GUST_10",
+                "PRCP_10",
+                "PRST_WX_DSC_1",
+                "PRST_WX_PHENOM_1",
+                "PRST_WX_DSC_2",
+                "PRST_WX_PHENOM_2",
+            ]).to_pandas()
 
-        monthly_avg = average_monthly_gale_weather_counts(gale_df, icao, month_number_order)
+            monthly_avg = average_monthly_gale_weather_counts(gale_df, icao, month_number_order)
 
-        monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
-        monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=month_name_order, ordered=True)
-        monthly_avg = monthly_avg.sort_values(["Month", "Category"])
-        
-        # Convert to native Python types to avoid Plotly binary encoding
-        monthly_avg["Count"] = monthly_avg["Count"].apply(float)
-        monthly_avg["Month"] = monthly_avg["Month"].astype(str)
-        monthly_avg["Category"] = monthly_avg["Category"].replace({"TS": TS_LEGEND_LABEL})
+            monthly_avg["Month"] = monthly_avg["month"].apply(lambda m: MONTH_NAMES[m - 1])
+            monthly_avg["Month"] = pd.Categorical(monthly_avg["Month"], categories=month_name_order, ordered=True)
+            monthly_avg = monthly_avg.sort_values(["Month", "Category"])
 
-        fig_gales = px.bar(
-            monthly_avg,
-            x="Month",
-            y="Count",
-            color="Category",
-            barmode="stack",
-            labels={"Count": "Avg Gale Obs/Month"},
-            title="Monthly Gale Frequency by Weather Type",
-            category_orders={"Month": month_name_order, "Category": ["No wx", "SHRA", TS_LEGEND_LABEL]},
-            color_discrete_map={"No wx": "#7a7a7a", "SHRA": "#3b82c4", TS_LEGEND_LABEL: "#c62828"},
-        )
-        fig_gales.update_xaxes(title_text="")
-        apply_common_layout(fig_gales, height=380)
-        apply_frequency_panel_layout(fig_gales)
-        if "gale_weather_split" in y_ceilings:
-            fig_gales.update_yaxes(range=[0, y_ceilings["gale_weather_split"]], autorange=False)
-        figures.append(fig_payload("gale_weather_split", fig_gales))
+            # Convert to native Python types to avoid Plotly binary encoding
+            monthly_avg["Count"] = monthly_avg["Count"].apply(float)
+            monthly_avg["Month"] = monthly_avg["Month"].astype(str)
+            monthly_avg["Category"] = monthly_avg["Category"].replace({"TS": TS_LEGEND_LABEL})
+
+            fig_gales = px.bar(
+                monthly_avg,
+                x="Month",
+                y="Count",
+                color="Category",
+                barmode="stack",
+                labels={"Count": "Avg Gale Obs/Month"},
+                title="Monthly Gale Frequency by Weather Type",
+                category_orders={"Month": month_name_order, "Category": ["No wx", "SHRA", TS_LEGEND_LABEL]},
+                color_discrete_map={"No wx": "#7a7a7a", "SHRA": "#3b82c4", TS_LEGEND_LABEL: "#c62828"},
+            )
+            fig_gales.update_xaxes(title_text="")
+            apply_common_layout(fig_gales, height=380)
+            apply_frequency_panel_layout(fig_gales)
+            if "gale_weather_split" in y_ceilings:
+                fig_gales.update_yaxes(range=[0, y_ceilings["gale_weather_split"]], autorange=False)
+            figures.append(fig_payload("gale_weather_split", fig_gales))
 
     elif section == "precipitation":
         monthly_precip_added = False
@@ -5889,46 +5897,46 @@ def charts(
                         icao,
                         month_number_order,
                     )
-                if fig_selected_frequency is not None:
+                if fig_selected_frequency is not None and wants_figure("monthly_fog"):
                     apply_common_layout(fig_selected_frequency)
                     apply_fog_side_legend(fig_selected_frequency)
                     apply_frequency_panel_layout(fig_selected_frequency)
                     if "monthly_fog" in y_ceilings:
                         fig_selected_frequency.update_yaxes(range=[0, y_ceilings["monthly_fog"]], autorange=False)
                     fog_figures.append(fig_payload("monthly_fog", fig_selected_frequency))
-                else:
+                elif wants_figure("monthly_fog"):
                     add_placeholder("monthly_fog", f"Fog/Low Cloud Frequency ({selected_monthly_label})", "No records for selected day filter")
 
                 fig_selected_hourly = build_fog_low_cloud_hourly_chart(
                     selected_hourly_df,
                     f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})",
                 )
-                if fig_selected_hourly is not None:
+                if fig_selected_hourly is not None and wants_figure("fog_share"):
                     apply_common_layout(fig_selected_hourly)
                     apply_fog_side_legend(fig_selected_hourly)
                     apply_frequency_panel_layout(fig_selected_hourly)
                     if "fog_share" in y_ceilings:
                         fig_selected_hourly.update_yaxes(range=[0, y_ceilings["fog_share"]], autorange=False)
                     fog_figures.append(fig_payload("fog_share", fig_selected_hourly))
-                else:
+                elif wants_figure("fog_share"):
                     add_placeholder("fog_share", f"Fog/Low Cloud Frequency by Hour ({selected_hourly_label})", "No hourly fog/low cloud data available for selected day filter")
 
                 fig_selected_wind = build_fog_low_cloud_wind_plot(
                     selected_wind_df,
                     f"Wind Direction/Strength ({selected_wind_label})",
                 )
-                if fig_selected_wind is not None:
+                if fig_selected_wind is not None and wants_figure("cloud_distribution"):
                     apply_common_layout(fig_selected_wind)
                     apply_fog_side_legend(fig_selected_wind, groupclick="togglegroup", top_margin=52)
                     fog_figures.append(fig_payload("cloud_distribution", fig_selected_wind))
-                else:
+                elif wants_figure("cloud_distribution"):
                     add_placeholder("cloud_distribution", f"Wind Direction/Strength ({selected_wind_label})", "No directional data available for selected day filter")
 
                 fig_selected_dewpoint = build_fog_low_cloud_dewpoint_chart(
                     selected_dewpoint_df,
                     f"Avg Dewpoint by Month ({selected_dewpoint_label})",
                 )
-                if fig_selected_dewpoint is not None:
+                if fig_selected_dewpoint is not None and wants_figure("fog_cloud_joint"):
                     apply_common_layout(fig_selected_dewpoint)
                     apply_fog_side_legend(fig_selected_dewpoint)
                     apply_frequency_panel_layout(fig_selected_dewpoint)
@@ -5938,13 +5946,17 @@ def charts(
                             autorange=False,
                         )
                     fog_figures.append(fig_payload("fog_cloud_joint", fig_selected_dewpoint))
-                else:
+                elif wants_figure("fog_cloud_joint"):
                     add_placeholder("fog_cloud_joint", f"Avg Dewpoint by Month ({selected_dewpoint_label})", "No dewpoint data available for selected day filter")
         else:
-            add_placeholder("monthly_fog", "Fog/Low Cloud Frequency (All Days)", "No records for selected filters")
-            add_placeholder("fog_share", "Fog/Low Cloud Frequency by Hour (All Days)", "No hourly fog/low cloud data available for selected filters")
-            add_placeholder("cloud_distribution", "Wind Direction/Strength (All Days)", "No records for selected filters")
-            add_placeholder("fog_cloud_joint", "Avg Dewpoint by Month (All Days)", "No dewpoint data available for selected filters")
+            if wants_figure("monthly_fog"):
+                add_placeholder("monthly_fog", "Fog/Low Cloud Frequency (All Days)", "No records for selected filters")
+            if wants_figure("fog_share"):
+                add_placeholder("fog_share", "Fog/Low Cloud Frequency by Hour (All Days)", "No hourly fog/low cloud data available for selected filters")
+            if wants_figure("cloud_distribution"):
+                add_placeholder("cloud_distribution", "Wind Direction/Strength (All Days)", "No records for selected filters")
+            if wants_figure("fog_cloud_joint"):
+                add_placeholder("fog_cloud_joint", "Avg Dewpoint by Month (All Days)", "No dewpoint data available for selected filters")
 
         figures.extend(fog_figures[:4])
 
