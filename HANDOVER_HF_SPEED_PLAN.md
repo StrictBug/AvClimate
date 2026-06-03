@@ -11,6 +11,7 @@ Last updated: 2026-06-03
 	- GZip middleware enabled in backend (`minimum_size=1000`).
 - Phase 4 partially completed:
 	- Startup default worker count increased to `WEB_CONCURRENCY=2` in `scripts/helpers/start_render.sh`.
+	- Deployed to HF Space (`main` commit `3b2e49d15`).
 - Remaining highest-priority work:
 	- Re-deploy with updated worker default and capture post-change live benchmark.
 	- If stable, evaluate `WEB_CONCURRENCY=3` and compare latency/error rate.
@@ -254,8 +255,22 @@ Notes:
 - For ongoing optimisation tracking, prioritize live-runtime benchmarks and periodic sampling over explicit cold-start/warm-start split testing.
 
 ### 10.7 Remaining work
-- Re-run a complete live snapshot including `smoke_dust` once after deployment with `WEB_CONCURRENCY=2`.
 - If stable, test `WEB_CONCURRENCY=3` and compare:
 	- per-section median latency
 	- API error/timeouts
 	- restart stability over 24-48h uptime.
+
+### 10.8 Post-deploy sample after worker tuning (`WEB_CONCURRENCY=2`)
+Sample run (YMML, one request per section, gzip enabled):
+
+| Section | Time (s) | Status |
+|---|---:|---:|
+| overview | 17.615 | 0 |
+| wind | 2.944 | 0 |
+| precipitation | 6.768 | 0 |
+| fog_low_cloud | 18.854 | 0 |
+| smoke_dust | 4.055 | 0 |
+
+Interpretation:
+- Post-deploy sample completed across all five sections without request errors.
+- `fog_low_cloud` and `overview` remain the highest-latency sections and are primary candidates for next-step optimisation.
