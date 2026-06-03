@@ -11,19 +11,19 @@ Last updated: 2026-06-03
 	- GZip middleware enabled in backend (`minimum_size=1000`).
 - Phase 4 partially completed:
 	- Startup default worker count increased to `WEB_CONCURRENCY=2` in `scripts/helpers/start_render.sh`.
-	- Deployed to HF Space (`main` commit `3b2e49d15`).
+	- Deployed to HF Space (`main` commit `7692cad9b`).
 - Remaining highest-priority work:
-	- Re-deploy with updated worker default and capture post-change live benchmark.
 	- If stable, evaluate `WEB_CONCURRENCY=3` and compare latency/error rate.
+	- Consider Phase 5 short-TTL response cache for repeated filter combinations.
 
 ## 1. Goal
 Improve graph load time on Hugging Face Spaces while keeping the same frontend and backend behavior, chart logic, data streams, and API semantics.
 
 ## 2. Current Observations
 - App is stable on HF with higher RAM, but slower than local Codespace.
-- Likely constraints are CPU throughput and request/serialization overhead, not memory.
+- Likely constraints are CPU throughput, cold-start effects, and request/serialization overhead, not memory.
 - Frontend chart batch fetching has been parallelized to reduce wall time on slower CPUs.
-- HF operational note: current Space is configured to sleep after ~48 hours of inactivity, so day-to-day tuning should focus on live runtime behavior rather than frequent cold-start effects.
+- HF operational note: Space is configured to sleep after approximately 48 hours of inactivity.
 
 ## 3. Non-Negotiables
 - Do not change chart outputs, filter behavior, or interpretation logic.
@@ -228,49 +228,37 @@ Key observation:
 - Warm-pass timings are not materially better than first-pass timings in this sample.
 
 ### 10.4 Deployed compression/header check (HF)
-- Header check against the live HF Space now shows `content-encoding: gzip` and `vary: Accept-Encoding` for `/api/options`.
-- This confirms gzip compression is active on the deployed runtime after the latest redeploy.
+- Header check against the live HF Space now shows `content-encoding: gzip` and `vary: Accept-Encoding` for:
+	- `/api/options`
+	- `/api/charts?section=overview&icao=YMML`
+- This confirms gzip compression is active on the current deployed runtime.
 
-### 10.5 Live benchmark snapshot (no cold/warm split)
+### 10.5 Remaining work to close Phase 1
+- Continue live-snapshot benchmarking (no cold/warm split) while the Space remains active.
+- Compare `WEB_CONCURRENCY=2` vs `WEB_CONCURRENCY=3` under the same sampling method.
+- If latency remains high in `overview` and `fog_low_cloud`, implement Phase 5 short-TTL cache and re-measure.
+
+### 10.6 Live uptime benchmark snapshot (no cold/warm split)
 Method:
-- Scope: live production endpoint during normal uptime (`https://strictbug-avclimate.hf.space`).
-- Sampling: repeated calls for YMML across sections.
-- Request settings: `curl` with `Accept-Encoding: gzip`, timeout guards enabled.
+- Scope: production endpoint during normal uptime (`https://strictbug-avclimate.hf.space`).
+- Airport: `YMML`.
+- Runs: 3 per section, gzip enabled, `curl --max-time 120`.
 
-Completed sample summary (seconds):
+Summary (seconds, median/p95):
 
 | Section | Median (s) | p95 (s) | n |
 |---|---:|---:|---:|
-| overview | 16.264 | 20.893 | 2 |
-| wind | 3.257 | 3.400 | 2 |
-| precipitation | 6.604 | 7.646 | 2 |
-| fog_low_cloud | 18.989 | 23.108 | 2 |
+| overview | 10.697 | 17.414 | 3 |
+| wind | 2.506 | 2.826 | 3 |
+| precipitation | 5.051 | 5.848 | 3 |
+| fog_low_cloud | 11.207 | 16.451 | 3 |
+| smoke_dust | 2.823 | 3.978 | 3 |
 
-Notes:
-- `fog_low_cloud` remains the slowest path in live sampling.
-- `smoke_dust` could not be included in this sample due a long-running request during measurement; rerun included below.
+Observations:
+- `overview` and `fog_low_cloud` remain the primary latency hotspots.
+- `wind` and `smoke_dust` are materially faster than `overview`/`fog_low_cloud` in live uptime sampling.
+- All sampled requests completed successfully (status `0`).
 
-### 10.6 Operational note (user-provided)
-- HF Space is currently configured to sleep after approximately 48 hours of inactivity.
-- For ongoing optimisation tracking, prioritize live-runtime benchmarks and periodic sampling over explicit cold-start/warm-start split testing.
-
-### 10.7 Remaining work
-- If stable, test `WEB_CONCURRENCY=3` and compare:
-	- per-section median latency
-	- API error/timeouts
-	- restart stability over 24-48h uptime.
-
-### 10.8 Post-deploy sample after worker tuning (`WEB_CONCURRENCY=2`)
-Sample run (YMML, one request per section, gzip enabled):
-
-| Section | Time (s) | Status |
-|---|---:|---:|
-| overview | 17.615 | 0 |
-| wind | 2.944 | 0 |
-| precipitation | 6.768 | 0 |
-| fog_low_cloud | 18.854 | 0 |
-| smoke_dust | 4.055 | 0 |
-
-Interpretation:
-- Post-deploy sample completed across all five sections without request errors.
-- `fog_low_cloud` and `overview` remain the highest-latency sections and are primary candidates for next-step optimisation.
+### 10.7 Operational note (user-provided)
+- The HF Space currently sleeps only after approximately 48 hours of inactivity.
+- For future optimisation tracking, prefer live-runtime sampling over cold/warm split unless sleep policy changes.
