@@ -6,6 +6,184 @@ const sections = [
   { key: "smoke_dust", label: "Smoke/Dust" },
 ];
 
+const infoDataSection = {
+  title: "Data sources",
+  bullets: [],
+};
+
+const infoObservationsSection = {
+  title: "Observations",
+  bullets: [
+    "METAR/SPECI data acquired from the ADAM database: January 1, 2000 to December 31, 2024.",
+    "GPATS lightning data acquired from the ADAM database: January 1, 2009 to December 31, 2013.",
+    "WZ lightning data acquired from the ADAM database: January 1, 2014 to December 31, 2024.",
+  ],
+};
+
+const infoClimateDriverSection = {
+  title: "Climate drivers",
+  bullets: [
+    {
+      text: "ENSO is characterized using the NINO3.4 sea-surface temperature anomaly index with coupled atmospheric monitoring indicators. Data acquired from ",
+      linkText: "Bureau of Meteorology ENSO and IOD monitoring",
+      href: "https://www.bom.gov.au/climate/enso/?ninoIndex=nino3.4&index=rnino34&period=weekly#tabs=Overview&overview-section=Monitoring-graphs",
+    },
+    {
+      text: "IOD is characterized using the Dipole Mode Index (DMI), based on the east-west Indian Ocean sea-surface temperature anomaly contrast. Data acquired from ",
+      linkText: "Bureau of Meteorology ENSO and IOD monitoring",
+      href: "https://www.bom.gov.au/climate/enso/?ninoIndex=nino3.4&index=rnino34&period=weekly#tabs=Overview&overview-section=Monitoring-graphs",
+    },
+    {
+      text: "SAM is characterized using the Marshall SAM index, an observation-based standardized pressure-gradient index between mid and high southern latitudes. Data acquired from ",
+      linkText: "BAS observation-based SAM index",
+      href: "http://www.nerc-bas.ac.uk/icd/gjma/sam.html",
+    },
+    {
+      text: "MJO is characterized using Real-time Multivariate MJO indices (RMM1 and RMM2) within an amplitude-phase framework. Data acquired from ",
+      linkText: "Bureau of Meteorology MJO monitoring",
+      href: "https://www.bom.gov.au/climate/mjo/#tabs=Monitoring",
+    },
+  ],
+};
+
+const infoSectionOverview = {
+  overview: {
+    title: "Overview",
+    figureOrder: ["wind_rose", "rain_thunder", "temp_dewpoint", "fog_low_cloud"],
+  },
+  wind: {
+    title: "Wind",
+    figureOrder: ["wind_rose", "gale_weather_split"],
+  },
+  precipitation: {
+    title: "Precipitation",
+    figureOrder: ["monthly_precip", "precip_split"],
+  },
+  fog_low_cloud: {
+    title: "Fog/Low cloud",
+    figureOrder: ["monthly_fog", "fog_share", "cloud_distribution", "fog_cloud_joint"],
+  },
+  smoke_dust: {
+    title: "Smoke/Dust",
+    figureOrder: ["monthly_smoke", "hourly_smoke", "scatter_wind_dewpt", "radial_scatter_dust"],
+  },
+};
+
+const infoFigureDetails = {
+  wind_rose: {
+    title: "Wind Rose",
+    bullets: [
+      "Shows relative frequency of wind by direction sector and speed bin.",
+      "Wind direction is grouped into directional sectors and wind speed into bins, then normalized to percent of filtered observations.",
+    ],
+  },
+  rain_thunder: {
+    title: "Rain/Thunder by Month",
+    bullets: [
+      "Monthly bars show percent of days classified as rain days and thunderstorm days.",
+      "Rain-day logic: any BoM day with RA/DZ/SH/TS weather tokens or PRCP_FM_09 > 0.2.",
+      "Thunder-day logic: any BoM day with at least one lightning strike within 8 km of aerodrome reference point; thunder averages are restricted to 2009 onward.",
+    ],
+  },
+  temp_dewpoint: {
+    title: "Temperature & Dewpoint",
+    bullets: [
+      "Shows monthly climatological max/min temperature and dewpoint behavior for the selected filters.",
+      "Values are monthly grouped means from filtered observations; secondary axis is used for precipitation context where applicable.",
+    ],
+  },
+  fog_low_cloud: {
+    title: "Fog/Low Cloud Frequency",
+    bullets: [
+      "Shows monthly frequency of fog and low cloud threshold categories.",
+      "Fog logic: explicit FG token OR inferred fog when (AIR_TEMP - DWPT) < 2 C, PRCP_10 < 0.2, and visibility < 1.0 km (VSBY or AWS_VSBY).",
+      "Cloud classification uses cloud-base bins: 2000-1500 ft, 1500-1000 ft, 1000-500 ft, and <500 ft; rain/non-rain mode toggles change denominator.",
+    ],
+  },
+  gale_weather_split: {
+    title: "Gale Weather Split",
+    bullets: [
+      "Monthly gale climatology split into No wx, SHRA, and TS categories.",
+      "Gale logic: WND_SPD > 17.49 m/s (34 kt) OR MAX_WND_GUST_10 > 21.09 m/s (41 kt).",
+      "Category logic: TS if lightning is within 8 km and +/-10 minutes of observation; else SHRA if SH+RA weather coding or PRCP_10 > 0.2; else No wx.",
+    ],
+  },
+  monthly_precip: {
+    title: "Monthly Precipitation Occurrence",
+    bullets: [
+      "Shows monthly rain and thunderstorm-day climatology under the active filters.",
+      "Rain-day logic: any BoM day with RA/DZ/SH/TS weather tokens or PRCP_FM_09 > 0.2.",
+      "Thunder-day logic: any BoM day with at least one lightning strike within 8 km of the aerodrome reference point.",
+    ],
+  },
+  precip_split: {
+    title: "Directional Precipitation Split",
+    bullets: [
+      "Polar chart showing precipitation intensity bucket contribution by wind-direction sector.",
+      "Precipitation is grouped into directional sectors and intensity buckets before normalization within filtered sectors.",
+    ],
+  },
+  monthly_fog: {
+    title: "Monthly Fog/Low Cloud Frequency",
+    bullets: [
+      "Monthly stacked frequencies for fog and cloud-base threshold categories.",
+      "Fog logic: explicit FG token OR inferred fog when (AIR_TEMP - DWPT) < 2 C, PRCP_10 < 0.2, and visibility < 1.0 km (VSBY or AWS_VSBY).",
+      "Cloud classification uses cloud-base bins: 2000-1500 ft, 1500-1000 ft, 1000-500 ft, and <500 ft; mode toggles alter denominator.",
+    ],
+  },
+  fog_share: {
+    title: "Hourly Fog/Low Cloud Share",
+    bullets: [
+      "Shows time-of-day distribution of fog/low cloud occurrences across selected months and years.",
+      "Fog logic: explicit FG token OR inferred fog when (AIR_TEMP - DWPT) < 2 C, PRCP_10 < 0.2, and visibility < 1.0 km (VSBY or AWS_VSBY).",
+      "Cloud classification uses cloud-base bins: 2000-1500 ft, 1500-1000 ft, 1000-500 ft, and <500 ft, then aggregates by hour.",
+    ],
+  },
+  cloud_distribution: {
+    title: "Cloud Distribution vs Wind",
+    bullets: [
+      "Shows low-cloud behavior relative to wind direction and speed classes.",
+      "Low-cloud membership is based on cloud amount coding (BKN/OVC) and cloud-base threshold bins (<2000/<1500/<1000/<500 ft).",
+    ],
+  },
+  fog_cloud_joint: {
+    title: "Fog/Cloud Joint Conditions",
+    bullets: [
+      "Relates fog/low-cloud occurrence to temperature-dewpoint spread groupings.",
+      "Fog classification uses explicit FG or inferred fog criteria: spread < 2 C, PRCP_10 < 0.2, visibility < 1.0 km (VSBY/AWS_VSBY).",
+      "Cloud classification uses cloud-base bins: 2000-1500 ft, 1500-1000 ft, 1000-500 ft, and <500 ft.",
+    ],
+  },
+  monthly_smoke: {
+    title: "Monthly Smoke/Dust Frequency",
+    bullets: [
+      "Monthly frequency of smoke/dust phenomena from configured code groups.",
+      "Classification tokens are FU, DU, SA, and VA from present weather fields; values are month-aggregated from filtered observations.",
+    ],
+  },
+  hourly_smoke: {
+    title: "Hourly Smoke/Dust Frequency",
+    bullets: [
+      "Hour-of-day frequency profile for smoke/dust observations.",
+      "Uses the same FU/DU/SA/VA token classification, then aggregates by hour.",
+    ],
+  },
+  scatter_wind_dewpt: {
+    title: "Wind Speed vs Dewpoint Spread",
+    bullets: [
+      "Scatter relationship between wind speed and dewpoint/temperature spread under smoke/dust conditions.",
+      "Points are filtered to observations containing FU/DU/SA/VA tokens before plotting wind/dewpoint-spread relationship.",
+    ],
+  },
+  radial_scatter_dust: {
+    title: "Directional Smoke/Dust Relative Frequency",
+    bullets: [
+      "Polar-frequency view of smoke/dust phenomenon occurrence by direction and speed.",
+      "Uses FU/DU/SA/VA classified observations grouped by direction and speed, normalized to relative frequency.",
+    ],
+  },
+};
+
 const API_BASE = (window.AVCLIMATE_API_BASE || "").replace(/\/+$/, "");
 
 function apiUrl(path) {
@@ -126,6 +304,10 @@ const els = {
   loadingOverlay: document.getElementById("loading-overlay"),
   loadingBarFill: document.getElementById("loading-bar-fill"),
   loadingStatus: document.getElementById("loading-status"),
+  infoBtn: document.getElementById("info-btn"),
+  infoOverlay: document.getElementById("info-overlay"),
+  infoCloseBtn: document.getElementById("info-close-btn"),
+  infoBody: document.getElementById("info-body"),
   metrics: document.getElementById("metrics"),
   fogModeToolbars: fogPanels.reduce((acc, panel) => {
     acc[panel.key] = document.getElementById(panel.toolbarId);
@@ -181,6 +363,167 @@ function ensureChartShell(host) {
 }
 
 const chartUi = els.charts.map((host) => ensureChartShell(host));
+
+let infoModalReturnFocusEl = null;
+
+function isInfoModalOpen() {
+  return Boolean(els.infoOverlay && !els.infoOverlay.classList.contains("hidden"));
+}
+
+function appendInfoSection(host, title, bullets) {
+  const section = document.createElement("section");
+  section.className = "info-section";
+
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  section.appendChild(heading);
+
+  if (Array.isArray(bullets) && bullets.length) {
+    const list = renderInfoBulletList(bullets);
+    section.appendChild(list);
+  }
+  host.appendChild(section);
+}
+
+function renderInfoBulletList(items) {
+  const list = document.createElement("ul");
+  list.className = "info-list";
+
+  items.forEach((item) => {
+    const li = document.createElement("li");
+    if (typeof item === "string") {
+      li.textContent = item;
+      list.appendChild(li);
+      return;
+    }
+
+    if (item && typeof item === "object") {
+      if (typeof item.href === "string" && item.href.length) {
+        const lead = typeof item.text === "string" ? item.text : "";
+        if (lead) {
+          li.appendChild(document.createTextNode(lead));
+        }
+        const link = document.createElement("a");
+        link.href = item.href;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = String(item.linkText || item.href);
+        li.appendChild(link);
+        li.appendChild(document.createTextNode("."));
+      } else {
+        li.textContent = String(item.text || "");
+      }
+      if (Array.isArray(item.subBullets) && item.subBullets.length) {
+        const subList = renderInfoBulletList(item.subBullets);
+        li.appendChild(subList);
+      }
+      list.appendChild(li);
+    }
+  });
+
+  return list;
+}
+
+function appendInfoSubsection(host, title, bullets) {
+  const section = document.createElement("section");
+  section.className = "info-subsection";
+
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  section.appendChild(heading);
+
+  if (Array.isArray(bullets) && bullets.length) {
+    const list = renderInfoBulletList(bullets);
+    section.appendChild(list);
+  }
+  host.appendChild(section);
+}
+
+function activeInfoSectionKey() {
+  return state.requestedSection || state.displayedSection || "overview";
+}
+
+function activeFigureIdsForInfo(sectionKey) {
+  const knownOrder = infoSectionOverview[sectionKey]?.figureOrder || [];
+  const latestIds = state.latestFigures
+    .map((entry) => (entry && typeof entry.id === "string" ? entry.id : ""))
+    .filter((id) => id && Object.hasOwn(infoFigureDetails, id));
+
+  if (latestIds.length) {
+    const ordered = knownOrder.filter((id) => latestIds.includes(id));
+    const extras = latestIds.filter((id) => !ordered.includes(id));
+    return [...ordered, ...extras];
+  }
+
+  return knownOrder.filter((id) => Object.hasOwn(infoFigureDetails, id));
+}
+
+function renderInfoModalContent() {
+  if (!els.infoBody) {
+    return;
+  }
+
+  els.infoBody.innerHTML = "";
+
+  const panels = document.createElement("div");
+  panels.className = "info-panels";
+
+  const dataPanel = document.createElement("section");
+  dataPanel.className = "info-panel info-panel-data";
+  appendInfoSection(dataPanel, infoDataSection.title, infoDataSection.bullets);
+  appendInfoSubsection(dataPanel, infoObservationsSection.title, infoObservationsSection.bullets);
+  appendInfoSubsection(dataPanel, infoClimateDriverSection.title, infoClimateDriverSection.bullets);
+
+  const graphPanel = document.createElement("section");
+  graphPanel.className = "info-panel info-panel-graphs";
+  const graphPanelHeader = document.createElement("section");
+  graphPanelHeader.className = "info-section";
+  const graphHeading = document.createElement("h3");
+  graphHeading.textContent = "Graph details";
+  graphPanelHeader.appendChild(graphHeading);
+  graphPanel.appendChild(graphPanelHeader);
+
+  const sectionKey = activeInfoSectionKey();
+
+  const figureIds = activeFigureIdsForInfo(sectionKey);
+  figureIds.forEach((figureId) => {
+    const detail = infoFigureDetails[figureId];
+    if (!detail) {
+      return;
+    }
+    appendInfoSubsection(graphPanel, detail.title, detail.bullets);
+  });
+
+  panels.appendChild(graphPanel);
+  panels.appendChild(dataPanel);
+  els.infoBody.appendChild(panels);
+}
+
+function openInfoModal() {
+  if (!els.infoOverlay) {
+    return;
+  }
+  renderInfoModalContent();
+  infoModalReturnFocusEl = document.activeElement;
+  els.infoOverlay.classList.remove("hidden");
+  els.infoOverlay.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+  if (els.infoCloseBtn) {
+    els.infoCloseBtn.focus();
+  }
+}
+
+function closeInfoModal() {
+  if (!els.infoOverlay) {
+    return;
+  }
+  els.infoOverlay.classList.add("hidden");
+  els.infoOverlay.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("modal-open");
+  if (infoModalReturnFocusEl && typeof infoModalReturnFocusEl.focus === "function") {
+    infoModalReturnFocusEl.focus();
+  }
+}
 
 let loadingProgress = 0;
 let loadingTimer = null;
@@ -2848,43 +3191,55 @@ async function fetchCharts() {
     let combinedMetrics = {};
     let combinedWarning = "";
 
-    for (let i = 0; i < batches.length; i += 1) {
-      const batch = batches[i];
+    if (showOverlay) {
+      setLoadingState(20, `Processing data (0/${batches.length})...`);
+    }
+
+    let completedBatches = 0;
+    const batchPromises = batches.map((batch, index) => {
       const params = getParams();
       if (batch.length) {
         params.set("figureIds", batch.join(","));
       }
-      if (i > 0) {
+      if (index > 0) {
         params.set("includeMetrics", "false");
       }
 
-      const batchProgress = 20 + Math.floor(((i + 1) / batches.length) * 45);
-      if (showOverlay) {
-        setLoadingState(batchProgress, `Processing data (${i + 1}/${batches.length})...`);
-      }
+      return fetch(apiUrl(`/api/charts?${params.toString()}`), { signal: controller.signal })
+        .then((res) => res.json())
+        .then((data) => {
+          completedBatches += 1;
+          if (!controller.signal.aborted && showOverlay) {
+            const batchProgress = 20 + Math.floor((completedBatches / batches.length) * 45);
+            setLoadingState(batchProgress, `Processing data (${completedBatches}/${batches.length})...`);
+          }
+          return { index, data };
+        });
+    });
 
-      const res = await fetch(apiUrl(`/api/charts?${params.toString()}`), { signal: controller.signal });
-      const data = await res.json();
+    const batchResults = await Promise.all(batchPromises);
 
-      if (controller.signal.aborted) {
-        return;
-      }
-
-      if (data.error) {
-        setStatus(data.error);
-        return;
-      }
-
-      if (data.warning && !combinedWarning) {
-        combinedWarning = data.warning;
-      }
-      if (data.metrics && Object.keys(data.metrics).length > 0) {
-        combinedMetrics = data.metrics;
-      }
-      if (Array.isArray(data.figures) && data.figures.length > 0) {
-        allFigures.push(...data.figures);
-      }
+    if (controller.signal.aborted) {
+      return;
     }
+
+    batchResults
+      .sort((a, b) => a.index - b.index)
+      .forEach(({ data }) => {
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
+        if (data.warning && !combinedWarning) {
+          combinedWarning = data.warning;
+        }
+        if (data.metrics && Object.keys(data.metrics).length > 0 && Object.keys(combinedMetrics).length === 0) {
+          combinedMetrics = data.metrics;
+        }
+        if (Array.isArray(data.figures) && data.figures.length > 0) {
+          allFigures.push(...data.figures);
+        }
+      });
 
     const data = {
       figures: allFigures,
@@ -2923,6 +3278,10 @@ async function fetchCharts() {
     renderMetrics(data.metrics, requestedSection);
   } catch (err) {
     if (err.name !== "AbortError") {
+      if (err?.message) {
+        setStatus(err.message);
+        return;
+      }
       if (window.location.hostname.endsWith("github.io") && !API_BASE) {
         setStatus("Failed to load charts. Set AVCLIMATE_API_BASE in config.js to your deployed backend URL.");
       } else {
@@ -2941,6 +3300,36 @@ async function fetchCharts() {
 }
 
 function wireControls() {
+  if (els.infoBtn) {
+    els.infoBtn.addEventListener("click", () => {
+      openInfoModal();
+    });
+  }
+
+  if (els.infoCloseBtn) {
+    els.infoCloseBtn.addEventListener("click", () => {
+      closeInfoModal();
+    });
+  }
+
+  if (els.infoOverlay) {
+    els.infoOverlay.addEventListener("click", (event) => {
+      if (event.target === els.infoOverlay) {
+        closeInfoModal();
+      }
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (!isInfoModalOpen()) {
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeInfoModal();
+    }
+  });
+
   renderErrorBarsToggle();
 
   if (els.errorBarsToggle) {

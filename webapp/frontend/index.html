@@ -19,8 +19,19 @@
     </div>
   </div>
 
+  <div class="info-overlay hidden" id="info-overlay" aria-hidden="true">
+    <div class="info-card" role="dialog" aria-modal="true" aria-labelledby="info-title">
+      <button id="info-close-btn" class="info-close-btn" type="button" aria-label="Close information">×</button>
+      <h2 id="info-title" class="info-title">About the data</h2>
+      <div id="info-body" class="info-body"></div>
+    </div>
+  </div>
+
   <header class="app-header">
-    <div class="title-row">Aviation climate explorer</div>
+    <div class="title-row">
+      Aviation climate explorer
+      <button id="info-btn" class="info-btn" type="button" aria-label="Show data and chart information" title="Data and chart information">i</button>
+    </div>
     <div class="category-row" id="category-row"></div>
   </header>
 
