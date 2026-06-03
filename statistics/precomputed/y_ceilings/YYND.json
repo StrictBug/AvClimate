@@ -1,0 +1,13 @@
+{
+  "fog_low_cloud": 1.0,
+  "fog_share": 1.0,
+  "gale_weather_split": 2.0,
+  "hourly_smoke": 1.0,
+  "monthly_fog": 1.0,
+  "monthly_precip": 14.0,
+  "monthly_smoke": 1.0,
+  "rain_thunder": 14.0,
+  "temp_dewpoint_y1_max": 41.0,
+  "temp_dewpoint_y1_min": -8.4,
+  "temp_dewpoint_y2": 170.0
+}

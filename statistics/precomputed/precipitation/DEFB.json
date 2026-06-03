@@ -1,0 +1,235 @@
+{
+  "monthly": [
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 2.0,
+      "bom_month": 2,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 1.0,
+      "bom_month": 3,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 4.0,
+      "bom_month": 4,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 5,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 6,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 7,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 8,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 9,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 10,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 3.0,
+      "bom_month": 11,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 15.0,
+      "bom_month": 12,
+      "bom_year": 2023,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 5.0,
+      "bom_month": 1,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 6.0,
+      "bom_month": 2,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 2.0,
+      "bom_month": 3,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 5.0,
+      "bom_month": 4,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 1.0,
+      "bom_month": 5,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 6,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 7,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 8,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 0.0,
+      "bom_month": 9,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 2.0,
+      "bom_month": 10,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 9.0,
+      "bom_month": 11,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    },
+    {
+      "Rain": 0.0,
+      "Thunderstorm": 11.0,
+      "bom_month": 12,
+      "bom_year": 2024,
+      "enso_norm": "all",
+      "iod_norm": "all",
+      "mjo_norm": "all",
+      "sam_norm": "all"
+    }
+  ],
+  "split": []
+}
